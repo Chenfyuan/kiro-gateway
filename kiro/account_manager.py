@@ -895,3 +895,141 @@ class AccountManager:
             if account.model_resolver:
                 all_models.update(account.model_resolver.get_available_models())
         return sorted(all_models)
+
+    def list_accounts_info(self) -> list:
+        """Return summary info for all accounts."""
+        result = []
+        for account_id, account in self._accounts.items():
+            result.append(self._build_account_info(account))
+        return result
+
+    def get_account_info(self, account_id: str) -> Optional[dict]:
+        """Return detailed info for a single account."""
+        account = self._accounts.get(account_id)
+        if not account:
+            return None
+        return self._build_account_info(account)
+
+    def _build_account_info(self, account: Account) -> dict:
+        """Build info dict for an account."""
+        auth_type = None
+        region = None
+        profile_arn = None
+        if account.auth_manager:
+            auth_type = account.auth_manager.auth_type.value
+            region = account.auth_manager.region
+            profile_arn = account.auth_manager.profile_arn
+
+        models_count = 0
+        if account.model_resolver:
+            models_count = len(account.model_resolver.get_available_models())
+
+        status = "healthy" if account.failures == 0 else "degraded"
+        if not account.auth_manager:
+            status = "uninitialized"
+
+        return {
+            "id": account.id,
+            "auth_type": auth_type,
+            "region": region,
+            "profile_arn": profile_arn,
+            "status": status,
+            "failures": account.failures,
+            "stats": {
+                "total": account.stats.total_requests,
+                "success": account.stats.successful_requests,
+                "failed": account.stats.failed_requests,
+            },
+            "models_count": models_count,
+        }
+
+    async def add_account(self, credentials: dict) -> str:
+        """
+        Add a new account at runtime from credentials dict.
+
+        Writes token file, updates credentials.json, initializes account.
+
+        Args:
+            credentials: Dict with accessToken, refreshToken, clientId, clientSecret, region
+
+        Returns:
+            Account ID (path to created token file)
+
+        Raises:
+            RuntimeError: If initialization fails
+        """
+        import uuid as _uuid
+
+        short_id = _uuid.uuid4().hex[:8]
+        creds_dir = Path(self._credentials_file).parent
+        token_filename = f"kiro-auth-token-{short_id}.json"
+        token_path = creds_dir / token_filename
+
+        with open(token_path, 'w', encoding='utf-8') as f:
+            json.dump(credentials, f, indent=2, ensure_ascii=False)
+
+        account_id = str(token_path.resolve())
+        creds_entry = {
+            "type": "json",
+            "path": str(token_path),
+            "region": credentials.get("region", "us-east-1"),
+        }
+
+        self._credentials_config.append(creds_entry)
+        self._save_credentials_config()
+
+        self._accounts[account_id] = Account(id=account_id)
+        success = await self._initialize_account(account_id)
+        if not success:
+            # Rollback
+            del self._accounts[account_id]
+            self._credentials_config.pop()
+            self._save_credentials_config()
+            token_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Failed to initialize account from {token_path}")
+
+        logger.info(f"Admin API: Added account {account_id}")
+        return account_id
+
+    async def remove_account(self, account_id: str) -> bool:
+        """
+        Remove an account at runtime.
+
+        Removes from memory and credentials.json. Does not delete token file.
+
+        Args:
+            account_id: Account ID to remove
+
+        Returns:
+            True if removed, False if not found
+        """
+        if account_id not in self._accounts:
+            return False
+
+        del self._accounts[account_id]
+
+        # Clean up model_to_accounts
+        for model_list in self._model_to_accounts.values():
+            if account_id in model_list.accounts:
+                model_list.accounts.remove(account_id)
+
+        # Remove from credentials config
+        self._credentials_config = [
+            entry for entry in self._credentials_config
+            if str(Path(entry.get("path", "")).expanduser().resolve()) != account_id
+        ]
+        self._save_credentials_config()
+
+        self._dirty = True
+        logger.info(f"Admin API: Removed account {account_id}")
+        return True
+
+    def _save_credentials_config(self) -> None:
+        """Persist credentials config to credentials.json."""
+        try:
+            creds_path = Path(self._credentials_file).expanduser()
+            with open(creds_path, 'w', encoding='utf-8') as f:
+                json.dump(self._credentials_config, f, indent=2, ensure_ascii=False)
+            logger.debug(f"Saved credentials config to {self._credentials_file}")
+        except Exception as e:
+            logger.error(f"Failed to save credentials config: {e}")
