@@ -869,17 +869,14 @@ class KiroAuthManager:
     
     async def _fetch_profile_arn_from_api(self) -> Optional[str]:
         """
-        Fetches profileArn from Kiro ListAvailableProfiles API.
+        Fetches profileArn from CodeWhisperer ListAvailableProfiles API.
 
         Called when JSON credentials don't include profileArn. The new
         runtime.kiro.dev endpoint requires profileArn for all auth types,
         but Builder ID / Social login tokens don't carry one in the JSON file.
 
-        Endpoint: https://runtime.{region}.kiro.dev/listAvailableProfiles
-        Method: POST
-        Content-Type: application/x-amz-json-1.0
-        Headers: x-amz-target: AmazonCodeWhispererService.ListAvailableProfiles
-        Body: {} (or {"maxResults": 10})
+        Uses codewhisperer.{region}.amazonaws.com because runtime.kiro.dev
+        does not support ListAvailableProfiles (returns UnknownOperationException).
 
         Returns:
             First available profile ARN, or None if none available / call failed.
@@ -887,7 +884,8 @@ class KiroAuthManager:
         if not self._access_token:
             return None
 
-        url = f"{self._api_host}/listAvailableProfiles"
+        region = self._sso_region or self._region
+        url = f"https://codewhisperer.{region}.amazonaws.com/listAvailableProfiles"
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/x-amz-json-1.0",
