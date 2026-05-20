@@ -867,29 +867,91 @@ class KiroAuthManager:
         else:
             self._save_credentials_to_file()
     
+    async def _fetch_profile_arn_from_api(self) -> Optional[str]:
+        """
+        Fetches profileArn from Kiro ListAvailableProfiles API.
+
+        Called when JSON credentials don't include profileArn. The new
+        runtime.kiro.dev endpoint requires profileArn for all auth types,
+        but Builder ID / Social login tokens don't carry one in the JSON file.
+
+        Endpoint: https://runtime.{region}.kiro.dev/listAvailableProfiles
+        Method: POST
+        Content-Type: application/x-amz-json-1.0
+        Headers: x-amz-target: AmazonCodeWhispererService.ListAvailableProfiles
+        Body: {} (or {"maxResults": 10})
+
+        Returns:
+            First available profile ARN, or None if none available / call failed.
+        """
+        if not self._access_token:
+            return None
+
+        url = f"{self._api_host}/listAvailableProfiles"
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/x-amz-json-1.0",
+            "x-amz-target": "AmazonCodeWhispererService.ListAvailableProfiles",
+            "User-Agent": f"KiroIDE-0.7.45-{self._fingerprint}",
+        }
+        payload = {"maxResults": 10}
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                if response.status_code != 200:
+                    logger.warning(
+                        f"ListAvailableProfiles failed: status={response.status_code}, "
+                        f"body={response.text[:500]}"
+                    )
+                    return None
+                data = response.json()
+
+            profiles = data.get("profiles") or []
+            if not profiles:
+                logger.warning("ListAvailableProfiles returned no profiles")
+                return None
+
+            # Pick the first profile's ARN
+            arn = profiles[0].get("arn")
+            if arn:
+                logger.info(f"Fetched profileArn from ListAvailableProfiles: {arn}")
+            return arn
+        except Exception as e:
+            logger.warning(f"Failed to fetch profileArn from API: {e}")
+            return None
+
     async def get_access_token(self) -> str:
         """
         Returns a valid access_token, refreshing it if necessary.
-        
+
         Thread-safe method using asyncio.Lock.
         Automatically refreshes the token if it has expired or is about to expire.
-        
+
         For SQLite mode (kiro-cli): implements graceful degradation when refresh fails.
         If kiro-cli has been running and refreshing tokens in memory (without persisting
         to SQLite), the refresh_token in SQLite becomes stale. In this case, we fall back
         to using the access_token directly until it actually expires.
-        
+
         Returns:
             Valid access token
-        
+
         Raises:
             ValueError: If unable to obtain access token
         """
         async with self._lock:
             # Token is valid and not expiring soon - just return it
             if self._access_token and not self.is_token_expiring_soon():
+                # Lazy-fetch profileArn if missing (e.g., Builder ID JSON without profileArn)
+                if not self._profile_arn:
+                    arn = await self._fetch_profile_arn_from_api()
+                    if arn:
+                        self._profile_arn = arn
+                        # Persist back to JSON file (skip for SQLite which is managed by kiro-cli)
+                        if self._creds_file and not self._sqlite_db:
+                            self._save_credentials_to_file()
                 return self._access_token
-            
+
             # SQLite mode: reload credentials first, kiro-cli might have updated them
             if self._sqlite_db and self.is_token_expiring_soon():
                 logger.debug("SQLite mode: reloading credentials before refresh attempt")
@@ -897,8 +959,12 @@ class KiroAuthManager:
                 # Check if reloaded token is now valid
                 if self._access_token and not self.is_token_expiring_soon():
                     logger.debug("SQLite reload provided fresh token, no refresh needed")
+                    if not self._profile_arn:
+                        arn = await self._fetch_profile_arn_from_api()
+                        if arn:
+                            self._profile_arn = arn
                     return self._access_token
-            
+
             # Try to refresh the token
             try:
                 await self._refresh_token_request()
@@ -927,10 +993,18 @@ class KiroAuthManager:
             except Exception:
                 # For any other exception, propagate it
                 raise
-            
+
             if not self._access_token:
                 raise ValueError("Failed to obtain access token")
-            
+
+            # After successful refresh, fetch profileArn if still missing
+            if not self._profile_arn:
+                arn = await self._fetch_profile_arn_from_api()
+                if arn:
+                    self._profile_arn = arn
+                    if self._creds_file and not self._sqlite_db:
+                        self._save_credentials_to_file()
+
             return self._access_token
     
     async def force_refresh(self) -> str:
