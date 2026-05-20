@@ -522,6 +522,8 @@ async def stream_kiro_to_anthropic(
                 context_usage_percentage = event.context_usage_percentage
             elif event.type == "usage" and event.usage:
                 upstream_cache_usage.update(_extract_cache_usage_fields(event.usage))
+            elif event.type in ("tool_start", "tool_input_delta", "tool_stop"):
+                pass  # Anthropic format uses aggregated tool_use events from end-of-stream
         
         # Track completion signals for truncation detection
         stream_completed_normally = context_usage_percentage is not None

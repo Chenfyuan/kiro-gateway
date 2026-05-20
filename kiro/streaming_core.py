@@ -81,6 +81,8 @@ class KiroEvent:
     content: Optional[str] = None
     thinking_content: Optional[str] = None
     tool_use: Optional[Dict[str, Any]] = None
+    tool_start_data: Optional[Dict[str, Any]] = None
+    tool_input_delta: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
     context_usage_percentage: Optional[float] = None
     is_first_thinking_chunk: bool = False
@@ -277,9 +279,18 @@ async def _process_chunk(
         
         elif event["type"] == "usage":
             yield KiroEvent(type="usage", usage=event["data"])
-        
+
         elif event["type"] == "context_usage":
             yield KiroEvent(type="context_usage", context_usage_percentage=event["data"])
+
+        elif event["type"] == "tool_start":
+            yield KiroEvent(type="tool_start", tool_start_data=event["data"])
+
+        elif event["type"] == "tool_input_delta":
+            yield KiroEvent(type="tool_input_delta", tool_input_delta=event["data"]["input"])
+
+        elif event["type"] == "tool_stop":
+            yield KiroEvent(type="tool_stop")
 
 
 # ==================================================================================================

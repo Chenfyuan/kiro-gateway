@@ -125,6 +125,10 @@ async def stream_kiro_to_openai_internal(
     
     streaming_error_occurred = False
     tool_calls_from_stream = []
+
+    # Incremental tool call streaming state
+    tool_call_index = 0
+    has_streamed_tool_incrementally = False
     
     try:
         # Use streaming_core.parse_kiro_stream for unified event parsing
@@ -261,6 +265,52 @@ async def stream_kiro_to_openai_internal(
                 
                 # Collect tool calls from stream (normal tools, not web_search)
                 tool_calls_from_stream.append(event.tool_use)
+
+            elif event.type == "tool_start" and event.tool_start_data:
+                has_streamed_tool_incrementally = True
+                # Emit OpenAI streaming chunk with tool call name
+                delta = {"tool_calls": [{
+                    "index": tool_call_index,
+                    "id": event.tool_start_data["id"],
+                    "type": "function",
+                    "function": {
+                        "name": event.tool_start_data["name"],
+                        "arguments": ""
+                    }
+                }]}
+                if first_chunk:
+                    delta["role"] = "assistant"
+                    first_chunk = False
+
+                openai_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_time,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}]
+                }
+                yield f"data: {json.dumps(openai_chunk, ensure_ascii=False)}\n\n"
+
+            elif event.type == "tool_input_delta" and event.tool_input_delta:
+                # Emit OpenAI streaming chunk with arguments delta
+                delta = {"tool_calls": [{
+                    "index": tool_call_index,
+                    "function": {
+                        "arguments": event.tool_input_delta
+                    }
+                }]}
+
+                openai_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_time,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}]
+                }
+                yield f"data: {json.dumps(openai_chunk, ensure_ascii=False)}\n\n"
+
+            elif event.type == "tool_stop":
+                tool_call_index += 1
             
             elif event.type == "usage" and event.usage:
                 metering_data = event.usage
@@ -322,8 +372,8 @@ async def stream_kiro_to_openai_internal(
             prompt_source = "tiktoken"
             total_source = "tiktoken"
         
-        # Send tool calls if present
-        if all_tool_calls:
+        # Send tool calls if present (only if not already streamed incrementally)
+        if all_tool_calls and not has_streamed_tool_incrementally:
             logger.debug(f"Processing {len(all_tool_calls)} tool calls for streaming response")
             
             # Add required index field to each tool_call

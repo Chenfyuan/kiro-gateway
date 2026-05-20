@@ -352,7 +352,7 @@ class AwsEventStreamParser:
         # Finalize previous tool call if exists
         if self.current_tool_call:
             self._finalize_tool_call()
-        
+
         # input can be string or object
         input_data = data.get('input', '')
         if isinstance(input_data, dict):
@@ -364,20 +364,23 @@ class AwsEventStreamParser:
                 input_str = ''
         else:
             input_str = str(input_data) if input_data else ''
-        
+
+        tool_id = data.get('toolUseId', generate_tool_call_id())
+        tool_name = data.get('name', '')
+
         self.current_tool_call = {
-            "id": data.get('toolUseId', generate_tool_call_id()),
+            "id": tool_id,
             "type": "function",
             "function": {
-                "name": data.get('name', ''),
+                "name": tool_name,
                 "arguments": input_str
             }
         }
-        
+
         if data.get('stop'):
             self._finalize_tool_call()
-        
-        return None
+
+        return {"type": "tool_start", "data": {"id": tool_id, "name": tool_name}}
     
     def _process_tool_input_event(self, data: dict) -> Optional[Dict[str, Any]]:
         """Processes input continuation for tool call."""
@@ -392,13 +395,15 @@ class AwsEventStreamParser:
             else:
                 input_str = str(input_data) if input_data else ''
             self.current_tool_call['function']['arguments'] += input_str
+            if input_str:
+                return {"type": "tool_input_delta", "data": {"input": input_str}}
         return None
     
     def _process_tool_stop_event(self, data: dict) -> Optional[Dict[str, Any]]:
         """Processes tool call end."""
         if self.current_tool_call and data.get('stop'):
             self._finalize_tool_call()
-        return None
+        return {"type": "tool_stop", "data": {}}
     
     def _finalize_tool_call(self) -> None:
         """Finalizes current tool call and adds to list."""
