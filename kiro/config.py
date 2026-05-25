@@ -318,7 +318,7 @@ DEFAULT_MAX_INPUT_TOKENS: int = 200000
 # Maximum length of tool description in characters.
 # Descriptions longer than this limit will be moved to system prompt.
 # Set to 0 to disable (not recommended - will cause Kiro API errors).
-TOOL_DESCRIPTION_MAX_LENGTH: int = int(os.getenv("TOOL_DESCRIPTION_MAX_LENGTH", "10000"))
+TOOL_DESCRIPTION_MAX_LENGTH: int = int(os.getenv("TOOL_DESCRIPTION_MAX_LENGTH", "0"))
 
 # ==================================================================================================
 # Truncation Recovery Settings
@@ -330,7 +330,7 @@ TOOL_DESCRIPTION_MAX_LENGTH: int = int(os.getenv("TOOL_DESCRIPTION_MAX_LENGTH", 
 # - For content: synthetic user message notifying about truncation
 # This helps the model understand and adapt to Kiro API limitations
 # Default: true (enabled)
-TRUNCATION_RECOVERY: bool = os.getenv("TRUNCATION_RECOVERY", "true").lower() in ("true", "1", "yes")
+TRUNCATION_RECOVERY: bool = os.getenv("TRUNCATION_RECOVERY", "false").lower() in ("true", "1", "yes")
 
 # ==================================================================================================
 # Logging Settings
@@ -431,7 +431,7 @@ def _warn_timeout_configuration():
 # Default: true (enabled) - provides premium experience out of the box
 _FAKE_REASONING_RAW: str = os.getenv("FAKE_REASONING", "").lower()
 # Default is True - if env var is not set or empty, enable fake reasoning
-FAKE_REASONING_ENABLED: bool = _FAKE_REASONING_RAW not in ("false", "0", "no", "disabled", "off")
+FAKE_REASONING_ENABLED: bool = _FAKE_REASONING_RAW in ("true", "1", "yes", "enabled", "on")
 
 # Maximum thinking length in tokens (default budget when client doesn't specify).
 # This value is injected into the request as <max_thinking_length>{value}</max_thinking_length>
@@ -500,7 +500,31 @@ AUTO_TRIM_PAYLOAD: bool = os.getenv("AUTO_TRIM_PAYLOAD", "false").lower() in ("t
 # Model decides whether to use it or not
 #
 # Note: Native Anthropic server-side tools (Path A) work ALWAYS, regardless of this setting
-WEB_SEARCH_ENABLED: bool = os.getenv("WEB_SEARCH_ENABLED", "true").lower() in ("true", "1", "yes")
+WEB_SEARCH_ENABLED: bool = os.getenv("WEB_SEARCH_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# ==================================================================================================
+# Passthrough Mode Settings (disable implicit request modifications)
+# ==================================================================================================
+
+# Use "(empty placeholder)" for empty content fields (Kiro API requires non-empty)
+# When false: uses single space " " instead of semantic placeholder text
+EMPTY_PLACEHOLDER_ENABLED: bool = os.getenv("EMPTY_PLACEHOLDER_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Insert synthetic user/assistant messages to maintain role alternation
+# When false: skip inserting synthetic messages (may cause Kiro API errors with some clients)
+SYNTHETIC_ROLES_ENABLED: bool = os.getenv("SYNTHETIC_ROLES_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Convert tool_calls/tool_results to text when no tools are defined in request
+# When false: preserve tool content as-is
+STRIP_TOOL_CONTENT_ENABLED: bool = os.getenv("STRIP_TOOL_CONTENT_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Convert orphaned tool_results (no matching tool_calls) to text
+# When false: preserve tool_results as-is
+ORPHAN_TOOL_RESULT_TO_TEXT: bool = os.getenv("ORPHAN_TOOL_RESULT_TO_TEXT", "false").lower() in ("true", "1", "yes")
+
+# Sanitize JSON schema (remove empty required[], additionalProperties)
+# When false: pass schema through unchanged
+SCHEMA_SANITIZE_ENABLED: bool = os.getenv("SCHEMA_SANITIZE_ENABLED", "false").lower() in ("true", "1", "yes")
 
 # ==================================================================================================
 # Account System Settings

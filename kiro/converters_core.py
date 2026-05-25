@@ -43,8 +43,18 @@ from kiro.config import (
     FAKE_REASONING_BUDGET_CAP,
     KIRO_MAX_PAYLOAD_BYTES,
     AUTO_TRIM_PAYLOAD,
+    EMPTY_PLACEHOLDER_ENABLED,
+    SYNTHETIC_ROLES_ENABLED,
+    STRIP_TOOL_CONTENT_ENABLED,
+    ORPHAN_TOOL_RESULT_TO_TEXT,
+    SCHEMA_SANITIZE_ENABLED,
 )
 from kiro.payload_guards import check_payload_size, trim_payload_to_limit
+
+
+def _placeholder() -> str:
+    """Return placeholder text for empty content based on config."""
+    return "(empty placeholder)" if EMPTY_PLACEHOLDER_ENABLED else " "
 
 
 # ==================================================================================================
@@ -454,6 +464,9 @@ def sanitize_json_schema(schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     if not schema:
         return {}
+
+    if not SCHEMA_SANITIZE_ENABLED:
+        return schema
     
     result = {}
     
@@ -929,7 +942,10 @@ def strip_all_tool_content(messages: List[UnifiedMessage]) -> Tuple[List[Unified
     """
     if not messages:
         return [], False
-    
+
+    if not STRIP_TOOL_CONTENT_ENABLED:
+        return messages, False
+
     result = []
     total_tool_calls_stripped = 0
     total_tool_results_stripped = 0
@@ -965,7 +981,7 @@ def strip_all_tool_content(messages: List[UnifiedMessage]) -> Tuple[List[Unified
                     content_parts.append(result_text)
             
             # Join all parts with double newline
-            content = "\n\n".join(content_parts) if content_parts else "(empty placeholder)"
+            content = "\n\n".join(content_parts) if content_parts else _placeholder()
             
             # Create a copy of the message without tool content but with text representation
             # IMPORTANT: Preserve images from the original message (e.g., screenshots from MCP tools)
@@ -1015,7 +1031,10 @@ def ensure_assistant_before_tool_results(messages: List[UnifiedMessage]) -> Tupl
     """
     if not messages:
         return [], False
-    
+
+    if not ORPHAN_TOOL_RESULT_TO_TEXT:
+        return messages, False
+
     result = []
     converted_any_tool_results = False
     
@@ -1183,17 +1202,19 @@ def ensure_first_message_is_user(messages: List[UnifiedMessage]) -> List[Unified
     """
     if not messages:
         return messages
-    
+
+    if not SYNTHETIC_ROLES_ENABLED:
+        return messages
+
     if messages[0].role != "user":
         logger.debug(
             f"First message is '{messages[0].role}', prepending synthetic user message "
             f"(Kiro API requires conversations to start with user)"
         )
         # Create minimal synthetic user message (matches LiteLLM behavior)
-        # Using "(empty placeholder)" as minimal valid content to avoid disrupting conversation context
         synthetic_user = UnifiedMessage(
             role="user",
-            content="(empty placeholder)"
+            content=_placeholder()
         )
         
         return [synthetic_user] + messages
@@ -1289,7 +1310,10 @@ def ensure_alternating_roles(messages: List[UnifiedMessage]) -> List[UnifiedMess
     """
     if not messages or len(messages) < 2:
         return messages
-    
+
+    if not SYNTHETIC_ROLES_ENABLED:
+        return messages
+
     result = [messages[0]]
     synthetic_count = 0
     
@@ -1300,7 +1324,7 @@ def ensure_alternating_roles(messages: List[UnifiedMessage]) -> List[UnifiedMess
         if msg.role == "user" and prev_role == "user":
             synthetic_assistant = UnifiedMessage(
                 role="assistant",
-                content="(empty placeholder)"  # Consistent with build_kiro_history() placeholder
+                content=_placeholder()  # Consistent with build_kiro_history() placeholder
             )
             result.append(synthetic_assistant)
             synthetic_count += 1
@@ -1342,8 +1366,8 @@ def build_kiro_history(messages: List[UnifiedMessage], model_id: str) -> List[Di
             
             # Fallback for empty content - Kiro API requires non-empty content
             if not content:
-                content = "(empty placeholder)"
-            
+                content = _placeholder()
+
             user_input = {
                 "content": content,
                 "modelId": model_id,
@@ -1381,10 +1405,10 @@ def build_kiro_history(messages: List[UnifiedMessage], model_id: str) -> List[Di
             
         elif msg.role == "assistant":
             content = extract_text_content(msg.content)
-            
+
             # Fallback for empty content - Kiro API requires non-empty content
             if not content:
-                content = "(empty placeholder)"
+                content = _placeholder()
             
             assistant_response = {"content": content}
             
@@ -1510,11 +1534,11 @@ def build_kiro_payload(
                 "content": current_content
             }
         })
-        current_content = "(empty placeholder)"
-    
+        current_content = _placeholder()
+
     # If content is empty - use placeholder
     if not current_content:
-        current_content = "(empty placeholder)"
+        current_content = _placeholder()
     
     # Process images in current message - extract from message or content
     # IMPORTANT: images go directly into userInputMessage, NOT into userInputMessageContext
