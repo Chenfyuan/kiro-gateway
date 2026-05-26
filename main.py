@@ -515,6 +515,11 @@ async def lifespan(app: FastAPI):
     app.state.usage_tracker = UsageTracker(db_path="data/token_usage.db")
     await app.state.usage_tracker.init_db()
 
+    # Initialize request logger
+    from kiro.request_logger import RequestLogger
+    app.state.request_logger = RequestLogger(db_path="data/token_usage.db")
+    await app.state.request_logger.init_db()
+
     yield
 
     # Graceful shutdown
@@ -522,6 +527,9 @@ async def lifespan(app: FastAPI):
 
     # Close usage tracker
     await app.state.usage_tracker.close()
+
+    # Close request logger
+    await app.state.request_logger.close()
 
     # Cancel background task
     save_task.cancel()

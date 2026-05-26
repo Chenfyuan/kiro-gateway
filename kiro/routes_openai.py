@@ -28,6 +28,7 @@ Contains all API endpoints:
 
 import asyncio
 import json
+import time as _time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security
@@ -178,6 +179,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         HTTPException: On validation or API errors
     """
     logger.info(f"Request to /v1/chat/completions (model={request_data.model}, stream={request_data.stream})")
+    _req_start_time = _time.time()
     
     # Note: prepare_new_request() and log_request_body() are now called by DebugLoggerMiddleware
     # This ensures debug logging works even for requests that fail Pydantic validation (422 errors)
@@ -433,6 +435,19 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                         account_id=account.id if account else "",
                                         api_type="openai",
                                     )
+                                # Record request log for streaming
+                                if hasattr(request.app.state, "request_logger"):
+                                    await request.app.state.request_logger.record(
+                                        model=request_data.model,
+                                        api_type="openai",
+                                        streaming=True,
+                                        status="error" if streaming_error else "success",
+                                        duration_ms=int((_time.time() - _req_start_time) * 1000),
+                                        prompt_tokens=stream_usage.get("prompt_tokens", 0),
+                                        completion_tokens=stream_usage.get("completion_tokens", 0),
+                                        account_id=account.id if account else "",
+                                        error_message=str(streaming_error)[:500] if streaming_error else "",
+                                    )
                                 if debug_logger:
                                     if streaming_error:
                                         debug_logger.flush_on_error(500, str(streaming_error))
@@ -471,9 +486,21 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                 request_id=openai_response.get("id", ""),
                             ))
 
+                        # Record request log
+                        if hasattr(request.app.state, "request_logger"):
+                            asyncio.create_task(request.app.state.request_logger.record(
+                                model=request_data.model,
+                                api_type="openai",
+                                streaming=False,
+                                status="success",
+                                duration_ms=int((_time.time() - _req_start_time) * 1000),
+                                prompt_tokens=usage.get("prompt_tokens", 0),
+                                completion_tokens=usage.get("completion_tokens", 0),
+                                account_id=account.id if account else "",
+                                request_id=openai_response.get("id", ""),
+                            ))
+
                         return JSONResponse(content=openai_response)
-                
-                else:
                     # ERROR - classify and decide
                     try:
                         error_content = await response.aread()

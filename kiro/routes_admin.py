@@ -167,3 +167,31 @@ async def usage_by_model(request: Request, days: int = 30, authorization: str = 
     if not tracker:
         raise HTTPException(status_code=503, detail="Usage tracker not initialized")
     return {"days": days, "data": await tracker.get_model_stats(days)}
+
+
+# ─── Request Logs Endpoints ─────────────────────────────────────────────────
+
+@router.get("/logs")
+async def get_logs(
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    model: str = "",
+    status: str = "",
+    days: int = 7,
+    authorization: str = Header(None),
+):
+    _verify_admin_auth(authorization)
+    req_logger = getattr(request.app.state, "request_logger", None)
+    if not req_logger:
+        raise HTTPException(status_code=503, detail="Request logger not initialized")
+    return await req_logger.query(page=page, page_size=page_size, model=model, status=status, days=days)
+
+
+@router.get("/logs/stats")
+async def get_logs_stats(request: Request, days: int = 7, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    req_logger = getattr(request.app.state, "request_logger", None)
+    if not req_logger:
+        raise HTTPException(status_code=503, detail="Request logger not initialized")
+    return await req_logger.get_stats(days)
