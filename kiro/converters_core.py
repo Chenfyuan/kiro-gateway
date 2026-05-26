@@ -1631,7 +1631,9 @@ def build_kiro_payload(
             "conversationId": conversation_id,
             "currentMessage": {
                 "userInputMessage": user_input_message
-            }
+            },
+            "agentContinuationId": conversation_id,
+            "agentTaskType": "vibe"
         }
     }
     
