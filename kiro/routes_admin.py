@@ -138,3 +138,32 @@ def _parse_kiro_export(data: dict) -> dict:
         result["region"] = creds["region"]
 
     return result
+
+
+# ─── Usage Statistics Endpoints ─────────────────────────────────────────────
+
+@router.get("/usage/summary")
+async def usage_summary(request: Request, days: int = 30, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    tracker = getattr(request.app.state, "usage_tracker", None)
+    if not tracker:
+        raise HTTPException(status_code=503, detail="Usage tracker not initialized")
+    return await tracker.get_summary(days)
+
+
+@router.get("/usage/daily")
+async def usage_daily(request: Request, days: int = 30, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    tracker = getattr(request.app.state, "usage_tracker", None)
+    if not tracker:
+        raise HTTPException(status_code=503, detail="Usage tracker not initialized")
+    return {"days": days, "data": await tracker.get_daily_stats(days)}
+
+
+@router.get("/usage/by-model")
+async def usage_by_model(request: Request, days: int = 30, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    tracker = getattr(request.app.state, "usage_tracker", None)
+    if not tracker:
+        raise HTTPException(status_code=503, detail="Usage tracker not initialized")
+    return {"days": days, "data": await tracker.get_model_stats(days)}

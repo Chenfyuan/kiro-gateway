@@ -26,6 +26,7 @@ Contains all API endpoints:
 - /v1/chat/completions: Chat completions
 """
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -434,10 +435,22 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         
                         await http_client.close()
                         logger.info(f"HTTP 200 - POST /v1/chat/completions (non-streaming) - completed")
-                        
+
                         if debug_logger:
                             debug_logger.discard_buffers()
-                        
+
+                        # Record token usage
+                        usage = openai_response.get("usage", {})
+                        if usage and hasattr(request.app.state, "usage_tracker"):
+                            asyncio.create_task(request.app.state.usage_tracker.record(
+                                model=request_data.model,
+                                prompt_tokens=usage.get("prompt_tokens", 0),
+                                completion_tokens=usage.get("completion_tokens", 0),
+                                account_id=account.id if account else "",
+                                api_type="openai",
+                                request_id=openai_response.get("id", ""),
+                            ))
+
                         return JSONResponse(content=openai_response)
                 
                 else:
@@ -669,6 +682,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             async def stream_wrapper():
                 streaming_error = None
                 client_disconnected = False
+                stream_usage = {}
                 try:
                     # Create retry request function for retries
                     async def make_retry_request():
@@ -687,6 +701,17 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         request_messages=messages_for_tokenizer,
                         request_tools=tools_for_tokenizer
                     ):
+                        # Capture usage from final chunk
+                        if chunk and '"usage"' in chunk:
+                            try:
+                                import json as _json
+                                for line in chunk.strip().split("\n"):
+                                    if line.startswith("data: ") and line != "data: [DONE]":
+                                        d = _json.loads(line[6:])
+                                        if "usage" in d:
+                                            stream_usage.update(d["usage"])
+                            except Exception:
+                                pass
                         yield chunk
                 except GeneratorExit:
                     # Client disconnected - this is normal
@@ -712,6 +737,15 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         logger.info(f"HTTP 200 - POST /v1/chat/completions (streaming) - client disconnected")
                     else:
                         logger.info(f"HTTP 200 - POST /v1/chat/completions (streaming) - completed")
+                    # Record token usage for streaming
+                    if stream_usage and not streaming_error and hasattr(request.app.state, "usage_tracker"):
+                        asyncio.create_task(request.app.state.usage_tracker.record(
+                            model=request_data.model,
+                            prompt_tokens=stream_usage.get("prompt_tokens", 0),
+                            completion_tokens=stream_usage.get("completion_tokens", 0),
+                            account_id=account.id if account else "",
+                            api_type="openai",
+                        ))
                     # Write debug logs AFTER streaming completes
                     if debug_logger:
                         if streaming_error:
@@ -735,14 +769,26 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             )
             
             await http_client.close()
-            
+
             # Log access log for non-streaming success
             logger.info(f"HTTP 200 - POST /v1/chat/completions (non-streaming) - completed")
-            
+
             # Write debug logs after non-streaming request completes
             if debug_logger:
                 debug_logger.discard_buffers()
-            
+
+            # Record token usage
+            usage = openai_response.get("usage", {})
+            if usage and hasattr(request.app.state, "usage_tracker"):
+                asyncio.create_task(request.app.state.usage_tracker.record(
+                    model=request_data.model,
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    account_id=account.id if account else "",
+                    api_type="openai",
+                    request_id=openai_response.get("id", ""),
+                ))
+
             return JSONResponse(content=openai_response)
     
     except HTTPException as e:

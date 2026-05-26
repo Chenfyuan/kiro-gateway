@@ -509,12 +509,20 @@ async def lifespan(app: FastAPI):
     )
     
     logger.info("Account system initialized successfully")
-    
+
+    # Initialize usage tracker
+    from kiro.usage_tracker import UsageTracker
+    app.state.usage_tracker = UsageTracker(db_path="data/token_usage.db")
+    await app.state.usage_tracker.init_db()
+
     yield
-    
+
     # Graceful shutdown
     logger.info("Shutting down application...")
-    
+
+    # Close usage tracker
+    await app.state.usage_tracker.close()
+
     # Cancel background task
     save_task.cancel()
     try:

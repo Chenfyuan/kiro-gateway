@@ -25,6 +25,7 @@ Contains the /v1/messages endpoint compatible with Anthropic's Messages API.
 Reference: https://docs.anthropic.com/en/api/messages
 """
 
+import asyncio
 import json
 from typing import Optional
 
@@ -512,9 +513,21 @@ async def messages(
                         
                         if debug_logger:
                             debug_logger.discard_buffers()
-                        
+
+                        # Record token usage
+                        usage = anthropic_response.get("usage", {})
+                        if usage and hasattr(request.app.state, "usage_tracker"):
+                            asyncio.create_task(request.app.state.usage_tracker.record(
+                                model=request_data.model,
+                                prompt_tokens=usage.get("input_tokens", 0),
+                                completion_tokens=usage.get("output_tokens", 0),
+                                account_id=account.id if account else "",
+                                api_type="anthropic",
+                                request_id=anthropic_response.get("id", ""),
+                            ))
+
                         return JSONResponse(content=anthropic_response)
-                
+
                 else:
                     # ERROR - classify and decide
                     try:
