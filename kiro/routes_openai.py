@@ -376,12 +376,13 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         async def stream_wrapper():
                             streaming_error = None
                             client_disconnected = False
+                            stream_usage = {}
                             try:
                                 async def make_retry_request():
                                     return await http_client.request_with_retry(
                                         "POST", url, kiro_payload, stream=True
                                     )
-                                
+
                                 async for chunk in stream_with_first_token_retry(
                                     make_request=make_retry_request,
                                     client=http_client.client,
@@ -392,6 +393,16 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                     request_messages=messages_for_tokenizer,
                                     request_tools=tools_for_tokenizer
                                 ):
+                                    # Capture usage from final chunk
+                                    if chunk and '"usage"' in chunk:
+                                        try:
+                                            for line in chunk.strip().split("\n"):
+                                                if line.startswith("data: ") and line != "data: [DONE]":
+                                                    d = json.loads(line[6:])
+                                                    if "usage" in d:
+                                                        stream_usage.update(d["usage"])
+                                        except Exception:
+                                            pass
                                     yield chunk
                             except GeneratorExit:
                                 client_disconnected = True
@@ -413,6 +424,15 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                     logger.info(f"HTTP 200 - POST /v1/chat/completions (streaming) - client disconnected")
                                 else:
                                     logger.info(f"HTTP 200 - POST /v1/chat/completions (streaming) - completed")
+                                # Record token usage for streaming
+                                if stream_usage and not streaming_error and hasattr(request.app.state, "usage_tracker"):
+                                    await request.app.state.usage_tracker.record(
+                                        model=request_data.model,
+                                        prompt_tokens=stream_usage.get("prompt_tokens", 0),
+                                        completion_tokens=stream_usage.get("completion_tokens", 0),
+                                        account_id=account.id if account else "",
+                                        api_type="openai",
+                                    )
                                 if debug_logger:
                                     if streaming_error:
                                         debug_logger.flush_on_error(500, str(streaming_error))
@@ -739,13 +759,13 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         logger.info(f"HTTP 200 - POST /v1/chat/completions (streaming) - completed")
                     # Record token usage for streaming
                     if stream_usage and not streaming_error and hasattr(request.app.state, "usage_tracker"):
-                        asyncio.create_task(request.app.state.usage_tracker.record(
+                        await request.app.state.usage_tracker.record(
                             model=request_data.model,
                             prompt_tokens=stream_usage.get("prompt_tokens", 0),
                             completion_tokens=stream_usage.get("completion_tokens", 0),
                             account_id=account.id if account else "",
                             api_type="openai",
-                        ))
+                        )
                     # Write debug logs AFTER streaming completes
                     if debug_logger:
                         if streaming_error:
