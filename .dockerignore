@@ -41,6 +41,8 @@ htmlcov
 .env.*.local
 credentials.json
 state.json
+kiro-auth-token*.json
+data/
 
 # Documentation
 docs/
