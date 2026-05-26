@@ -161,6 +161,7 @@ class Account:
     last_failure_time: float = 0.0
     models_cached_at: float = 0.0
     disabled: bool = False
+    email: Optional[str] = None
     stats: AccountStats = field(default_factory=AccountStats)
 
 
@@ -359,6 +360,7 @@ class AccountManager:
                     account.last_failure_time = data.get("last_failure_time", 0.0)
                     account.models_cached_at = data.get("models_cached_at", 0.0)
                     account.disabled = data.get("disabled", False)
+                    account.email = data.get("email")
                     
                     stats_data = data.get("stats", {})
                     account.stats = AccountStats(
@@ -386,6 +388,7 @@ class AccountManager:
                     "last_failure_time": account.last_failure_time,
                     "models_cached_at": account.models_cached_at,
                     "disabled": account.disabled,
+                    "email": account.email,
                     "stats": {
                         "total_requests": account.stats.total_requests,
                         "successful_requests": account.stats.successful_requests,
@@ -564,7 +567,13 @@ class AccountManager:
             account.model_cache = model_cache
             account.model_resolver = model_resolver
             account.models_cached_at = time.time()
-            
+
+            # Fetch user email
+            try:
+                account.email = await self._fetch_user_email(auth_manager)
+            except Exception as e:
+                logger.warning(f"Failed to fetch email for {account_id}: {e}")
+
             # Update model_to_accounts mapping
             available_models = model_resolver.get_available_models()
             for model in available_models:
@@ -580,7 +589,34 @@ class AccountManager:
         except Exception as e:
             logger.error(f"Failed to initialize account {account_id}: {e}")
             return False
-    
+
+    async def _fetch_user_email(self, auth_manager: KiroAuthManager) -> Optional[str]:
+        """
+        Fetch user email via Kiro GetUserInfo API.
+
+        Args:
+            auth_manager: Initialized auth manager with valid token
+
+        Returns:
+            Email string or None
+        """
+        url = f"{auth_manager.q_host}/GetUserInfo"
+        token = await auth_manager.get_access_token()
+        headers = get_kiro_headers(auth_manager, token)
+        headers["Content-Type"] = "application/json"
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(url, json={"origin": "KIRO_IDE"}, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                email = data.get("email")
+                if email:
+                    logger.info(f"Got user email: {email}")
+                return email
+            else:
+                logger.warning(f"GetUserInfo failed: HTTP {response.status_code}")
+                return None
+
     async def _refresh_account_models(self, account_id: str) -> None:
         """
         Refresh model cache for account (TTL refresh).
@@ -943,6 +979,7 @@ class AccountManager:
 
         return {
             "id": account.id,
+            "email": account.email,
             "auth_type": auth_type,
             "region": region,
             "profile_arn": profile_arn,
