@@ -51,6 +51,14 @@ async def list_accounts(request: Request, authorization: str = Header(None)):
     }
 
 
+@router.post("/accounts/refresh-quotas")
+async def refresh_quotas(request: Request, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+    await account_manager.refresh_all_quotas()
+    return {"status": "ok"}
+
+
 @router.get("/accounts/{account_id:path}")
 async def get_account(request: Request, account_id: str, authorization: str = Header(None)):
     _verify_admin_auth(authorization)
@@ -114,6 +122,7 @@ async def remove_account(request: Request, account_id: str, authorization: str =
     if not removed:
         raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
     return {"status": "ok", "removed": account_id}
+
 
 
 def _parse_kiro_export(data: dict) -> dict:

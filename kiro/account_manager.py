@@ -162,6 +162,9 @@ class Account:
     models_cached_at: float = 0.0
     disabled: bool = False
     email: Optional[str] = None
+    current_usage: Optional[float] = None
+    usage_limit: Optional[float] = None
+    quota_updated_at: float = 0.0
     stats: AccountStats = field(default_factory=AccountStats)
 
 
@@ -361,6 +364,9 @@ class AccountManager:
                     account.models_cached_at = data.get("models_cached_at", 0.0)
                     account.disabled = data.get("disabled", False)
                     account.email = data.get("email")
+                    account.current_usage = data.get("current_usage")
+                    account.usage_limit = data.get("usage_limit")
+                    account.quota_updated_at = data.get("quota_updated_at", 0.0)
                     
                     stats_data = data.get("stats", {})
                     account.stats = AccountStats(
@@ -389,6 +395,9 @@ class AccountManager:
                     "models_cached_at": account.models_cached_at,
                     "disabled": account.disabled,
                     "email": account.email,
+                    "current_usage": account.current_usage,
+                    "usage_limit": account.usage_limit,
+                    "quota_updated_at": account.quota_updated_at,
                     "stats": {
                         "total_requests": account.stats.total_requests,
                         "successful_requests": account.stats.successful_requests,
@@ -592,7 +601,7 @@ class AccountManager:
 
     async def _fetch_user_email(self, auth_manager: KiroAuthManager) -> Optional[str]:
         """
-        Fetch user email via Kiro getUsageLimits API (with isEmailRequired=true).
+        Fetch user email and usage limits via Kiro getUsageLimits API.
 
         Args:
             auth_manager: Initialized auth manager with valid token
@@ -617,6 +626,43 @@ class AccountManager:
             else:
                 logger.warning(f"getUsageLimits failed: HTTP {response.status_code}")
                 return None
+
+    async def _fetch_usage_limits(self, account: "Account") -> None:
+        """
+        Fetch and update usage limits for an account.
+        """
+        if not account.auth_manager:
+            return
+        region = account.auth_manager.region
+        url = f"https://codewhisperer.{region}.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+        token = await account.auth_manager.get_access_token()
+        headers = get_kiro_headers(account.auth_manager, token)
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    data = response.json()
+                    breakdown_list = data.get("usageBreakdownList") or []
+                    if breakdown_list:
+                        breakdown = breakdown_list[0]
+                        account.current_usage = breakdown.get("currentUsage", 0)
+                        account.usage_limit = breakdown.get("usageLimit", 0)
+                        account.quota_updated_at = time.time()
+                        logger.info(f"Account {account.id[:8]} usage: {account.current_usage}/{account.usage_limit}")
+                    # Also update email if missing
+                    if not account.email:
+                        user_info = data.get("userInfo") or {}
+                        account.email = user_info.get("email")
+        except Exception as e:
+            logger.warning(f"Failed to fetch usage limits for {account.id[:8]}: {e}")
+
+    async def refresh_all_quotas(self) -> None:
+        """Refresh usage limits for all initialized accounts."""
+        for account in self._accounts.values():
+            if account.auth_manager:
+                await self._fetch_usage_limits(account)
+        await self._save_state()
 
     async def _refresh_account_models(self, account_id: str) -> None:
         """
@@ -993,6 +1039,9 @@ class AccountManager:
                 "failed": account.stats.failed_requests,
             },
             "models_count": models_count,
+            "current_usage": account.current_usage,
+            "usage_limit": account.usage_limit,
+            "quota_updated_at": account.quota_updated_at,
         }
 
     async def add_account(self, credentials: dict) -> str:
