@@ -57,7 +57,24 @@ def _placeholder() -> str:
     return "(empty placeholder)" if EMPTY_PLACEHOLDER_ENABLED else " "
 
 
-# ==================================================================================================
+def _build_tool_results_text(tool_results: List[Dict[str, Any]], max_len: int = 4000) -> str:
+    """Build text summary of tool results (like kirogo's buildToolResultsContinuation)."""
+    parts = []
+    for tr in tool_results:
+        content = tr.get("content", "")
+        tool_id = tr.get("tool_use_id", "unknown")
+        if isinstance(content, list):
+            # Extract text from content blocks
+            text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+            content = "\n".join(text_parts)
+        if content:
+            parts.append(f"[{tool_id}]: {content}")
+    if not parts:
+        return ""
+    text = "Tool results:\n\n" + "\n\n".join(parts)
+    if len(text) > max_len:
+        text = text[:max_len] + "...(truncated)"
+    return text# ==================================================================================================
 # Data Classes for Unified Message Format
 # ==================================================================================================
 
@@ -1369,6 +1386,12 @@ def build_kiro_history(messages: List[UnifiedMessage], model_id: str) -> List[Di
             if not content and not msg.tool_results:
                 content = _placeholder()
 
+            # Add text summary of tool results (like kirogo)
+            if msg.tool_results:
+                tool_text = _build_tool_results_text(msg.tool_results)
+                if tool_text:
+                    content = tool_text if not content else f"{content}\n\n{tool_text}"
+
             user_input = {
                 "content": content or "",
                 "modelId": model_id,
@@ -1512,22 +1535,26 @@ def build_kiro_payload(
     # Build history (all messages except the last one)
     history_messages = merged_messages[:-1] if len(merged_messages) > 1 else []
     
-    # If there's a system prompt, add it to the first user message in history
+    # If there's a system prompt, create a priming pair in history (like kirogo)
+    # instead of merging into the first user message content
     if full_system_prompt and history_messages:
-        first_msg = history_messages[0]
-        if first_msg.role == "user":
-            original_content = extract_text_content(first_msg.content)
-            first_msg.content = f"{full_system_prompt}\n\n{original_content}"
-    
+        # Create synthetic priming pair: user(system_prompt) + assistant(ack)
+        priming_user = UnifiedMessage(role="user", content=full_system_prompt.strip())
+        priming_assistant = UnifiedMessage(role="assistant", content="I will follow these instructions.")
+        history_messages = [priming_user, priming_assistant] + history_messages
+
     history = build_kiro_history(history_messages, model_id)
     
     # Current message (the last one)
     current_message = merged_messages[-1]
     current_content = extract_text_content(current_message.content)
     
-    # If system prompt exists but history is empty - add to current message
+    # If system prompt exists but history is empty - create priming pair before current message
     if full_system_prompt and not history:
-        current_content = f"{full_system_prompt}\n\n{current_content}"
+        history = [
+            {"userInputMessage": {"content": full_system_prompt.strip(), "modelId": model_id, "origin": "AI_EDITOR"}},
+            {"assistantResponseMessage": {"content": "I will follow these instructions."}}
+        ]
     
     # If current message is assistant, need to add it to history
     # and create user message placeholder
@@ -1567,6 +1594,11 @@ def build_kiro_payload(
         kiro_tool_results = convert_tool_results_to_kiro_format(current_message.tool_results)
         if kiro_tool_results:
             user_input_context["toolResults"] = kiro_tool_results
+        # Also add text summary to content (like kirogo does)
+        # This helps the model understand tool results context
+        tool_text = _build_tool_results_text(current_message.tool_results)
+        if tool_text:
+            current_content = tool_text if not current_content else f"{current_content}\n\n{tool_text}"
     else:
         # Try to extract from content (already in Kiro format)
         tool_results = extract_tool_results_from_content(current_message.content)
