@@ -1363,13 +1363,14 @@ def build_kiro_history(messages: List[UnifiedMessage], model_id: str) -> List[Di
     for msg in messages:
         if msg.role == "user":
             content = extract_text_content(msg.content)
-            
+
             # Fallback for empty content - Kiro API requires non-empty content
-            if not content:
+            # But skip placeholder when user message has tool_results (pure tool result turn)
+            if not content and not msg.tool_results:
                 content = _placeholder()
 
             user_input = {
-                "content": content,
+                "content": content or "",
                 "modelId": model_id,
                 "origin": "AI_EDITOR",
             }
@@ -1406,14 +1407,16 @@ def build_kiro_history(messages: List[UnifiedMessage], model_id: str) -> List[Di
         elif msg.role == "assistant":
             content = extract_text_content(msg.content)
 
-            # Fallback for empty content - Kiro API requires non-empty content
-            if not content:
-                content = _placeholder()
-            
-            assistant_response = {"content": content}
-            
             # Process tool_calls
             tool_uses = extract_tool_uses_from_message(msg.content, msg.tool_calls)
+
+            # Fallback for empty content - Kiro API requires non-empty content
+            # But skip placeholder when assistant has toolUses (pure tool call turn)
+            if not content and not tool_uses:
+                content = _placeholder()
+
+            assistant_response = {"content": content or ""}
+
             if tool_uses:
                 assistant_response["toolUses"] = tool_uses
             
@@ -1536,8 +1539,8 @@ def build_kiro_payload(
         })
         current_content = _placeholder()
 
-    # If content is empty - use placeholder
-    if not current_content:
+    # If content is empty - use placeholder (but not for pure tool_result continuation turns)
+    if not current_content and not current_message.tool_results:
         current_content = _placeholder()
     
     # Process images in current message - extract from message or content
@@ -1576,7 +1579,7 @@ def build_kiro_payload(
     
     # Build userInputMessage
     user_input_message = {
-        "content": current_content,
+        "content": current_content or "",
         "modelId": model_id,
         "origin": "AI_EDITOR",
     }
