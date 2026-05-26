@@ -447,6 +447,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                         completion_tokens=stream_usage.get("completion_tokens", 0),
                                         account_id=account.id if account else "",
                                         error_message=str(streaming_error)[:500] if streaming_error else "",
+                                        request_body=json.dumps(request_data.model_dump(), ensure_ascii=False),
+                                        response_body=json.dumps(stream_usage) if stream_usage else "",
                                     )
                                 if debug_logger:
                                     if streaming_error:
@@ -498,6 +500,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                 completion_tokens=usage.get("completion_tokens", 0),
                                 account_id=account.id if account else "",
                                 request_id=openai_response.get("id", ""),
+                                request_body=json.dumps(request_data.model_dump(), ensure_ascii=False),
+                                response_body=json.dumps(openai_response, ensure_ascii=False),
                             ))
 
                         return JSONResponse(content=openai_response)

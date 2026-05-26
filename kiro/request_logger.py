@@ -46,7 +46,9 @@ class RequestLogger:
                 completion_tokens INTEGER DEFAULT 0,
                 account_id TEXT,
                 error_message TEXT,
-                request_id TEXT
+                request_id TEXT,
+                request_body TEXT,
+                response_body TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp);
             CREATE INDEX IF NOT EXISTS idx_request_logs_status ON request_logs(status);
@@ -67,6 +69,8 @@ class RequestLogger:
         account_id: str = "",
         error_message: str = "",
         request_id: str = "",
+        request_body: str = "",
+        response_body: str = "",
     ) -> None:
         """Record a request log entry."""
         async with self._lock:
@@ -74,11 +78,12 @@ class RequestLogger:
                 self._conn.execute(
                     """INSERT INTO request_logs
                        (model, api_type, streaming, status, status_code, duration_ms,
-                        prompt_tokens, completion_tokens, account_id, error_message, request_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        prompt_tokens, completion_tokens, account_id, error_message, request_id,
+                        request_body, response_body)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (model, api_type, 1 if streaming else 0, status, status_code,
                      duration_ms, prompt_tokens, completion_tokens, account_id,
-                     error_message, request_id),
+                     error_message, request_id, request_body, response_body),
                 )
                 self._conn.commit()
             except Exception as e:
