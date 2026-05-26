@@ -600,7 +600,9 @@ class AccountManager:
         Returns:
             Email string or None
         """
-        url = f"{auth_manager.q_host}/GetUserInfo"
+        # GetUserInfo is on the old codewhisperer endpoint, not runtime.kiro.dev
+        region = auth_manager.region
+        url = f"https://codewhisperer.{region}.amazonaws.com/GetUserInfo"
         token = await auth_manager.get_access_token()
         headers = get_kiro_headers(auth_manager, token)
         headers["Content-Type"] = "application/json"
