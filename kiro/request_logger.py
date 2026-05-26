@@ -54,6 +54,15 @@ class RequestLogger:
             CREATE INDEX IF NOT EXISTS idx_request_logs_status ON request_logs(status);
         """)
         self._conn.commit()
+
+        # Migration: add columns if missing
+        try:
+            self._conn.execute("SELECT request_body FROM request_logs LIMIT 1")
+        except sqlite3.OperationalError:
+            self._conn.execute("ALTER TABLE request_logs ADD COLUMN request_body TEXT")
+            self._conn.execute("ALTER TABLE request_logs ADD COLUMN response_body TEXT")
+            self._conn.commit()
+
         logger.info("RequestLogger initialized")
 
     async def record(
