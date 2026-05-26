@@ -592,7 +592,7 @@ class AccountManager:
 
     async def _fetch_user_email(self, auth_manager: KiroAuthManager) -> Optional[str]:
         """
-        Fetch user email via Kiro GetUserInfo API.
+        Fetch user email via Kiro getUsageLimits API (with isEmailRequired=true).
 
         Args:
             auth_manager: Initialized auth manager with valid token
@@ -600,23 +600,22 @@ class AccountManager:
         Returns:
             Email string or None
         """
-        # GetUserInfo is on the old codewhisperer endpoint, not runtime.kiro.dev
         region = auth_manager.region
-        url = f"https://codewhisperer.{region}.amazonaws.com/GetUserInfo"
+        url = f"https://codewhisperer.{region}.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
         token = await auth_manager.get_access_token()
         headers = get_kiro_headers(auth_manager, token)
-        headers["Content-Type"] = "application/json"
 
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(url, json={"origin": "KIRO_IDE"}, headers=headers)
+            response = await client.get(url, headers=headers)
             if response.status_code == 200:
                 data = response.json()
-                email = data.get("email")
+                user_info = data.get("userInfo") or {}
+                email = user_info.get("email")
                 if email:
                     logger.info(f"Got user email: {email}")
                 return email
             else:
-                logger.warning(f"GetUserInfo failed: HTTP {response.status_code}")
+                logger.warning(f"getUsageLimits failed: HTTP {response.status_code}")
                 return None
 
     async def _refresh_account_models(self, account_id: str) -> None:
