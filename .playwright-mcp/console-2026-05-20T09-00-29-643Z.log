@@ -1,0 +1,14 @@
+[    1280ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/me:0
+[   14765ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[   19666ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[   43417ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[   83733ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[   98389ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[   99067ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[   99300ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[   99499ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[   99683ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[  126985ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[  205636ms] [ERROR] Failed to load resource: the server responded with a status of 502 (Bad Gateway) @ http://127.0.0.1:5174/api/v1/auth/login:0
+[  210527ms] [LOG] [vite] server connection lost. Polling for restart... @ http://127.0.0.1:5174/admin-vue/@vite/client:968
+[  213627ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "new-password"): (More info: https://goo.gl/9p2vKq) %o @ https://signinuat.midea.com/login?service=http%3A%2F%2Faiconsole-sit-ga.midea.com%3A8080%2Fapi%2Fv1%2Fauth%2Fsso%2Flogin%3Fredirect%3D%252Fpools:0

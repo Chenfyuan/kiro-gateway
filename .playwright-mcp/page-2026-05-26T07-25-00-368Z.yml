@@ -1,0 +1,45 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]: Kiro Gateway
+    - menubar [ref=e6]:
+      - menuitem "仪表盘" [ref=e7] [cursor=pointer]:
+        - img [ref=e9]
+        - generic [ref=e13]: 仪表盘
+      - menuitem "账户管理" [ref=e14] [cursor=pointer]:
+        - img [ref=e16]
+        - generic [ref=e18]: 账户管理
+      - menuitem "模型列表" [ref=e19] [cursor=pointer]:
+        - img [ref=e21]
+        - generic [ref=e24]: 模型列表
+      - menuitem "日志" [ref=e25] [cursor=pointer]:
+        - img [ref=e27]
+        - generic [ref=e29]: 日志
+      - menuitem "设置" [ref=e30] [cursor=pointer]:
+        - img [ref=e32]
+        - generic [ref=e34]: 设置
+  - generic [ref=e35]:
+    - banner [ref=e36]:
+      - generic [ref=e37]: Kiro Gateway 管理面板
+      - generic [ref=e39]: 未配置
+    - main [ref=e40]:
+      - generic [ref=e41]:
+        - heading "设置" [level=2] [ref=e42]
+        - generic [ref=e45]:
+          - generic [ref=e46]:
+            - generic [ref=e47]: API 地址
+            - generic [ref=e48]:
+              - textbox "API 地址" [ref=e51]:
+                - /placeholder: 请输入 API 地址
+                - text: http://kiro-gateway-lb-1485434752.us-east-1.elb.amazonaws.com
+              - generic [ref=e53]: 网关服务的完整 URL，例如 http://localhost:8000
+          - generic [ref=e54]:
+            - generic [ref=e55]: API 密钥
+            - generic [ref=e56]:
+              - textbox "API 密钥" [ref=e59]:
+                - /placeholder: 请输入 API 密钥
+              - generic [ref=e61]: 用于访问管理接口的 Bearer Token
+          - generic [ref=e63]:
+            - button "保存设置" [ref=e64] [cursor=pointer]:
+              - generic [ref=e65]: 保存设置
+            - button "测试连接" [ref=e66] [cursor=pointer]:
+              - generic [ref=e67]: 测试连接

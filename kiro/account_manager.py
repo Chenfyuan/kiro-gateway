@@ -160,6 +160,7 @@ class Account:
     failures: int = 0
     last_failure_time: float = 0.0
     models_cached_at: float = 0.0
+    disabled: bool = False
     stats: AccountStats = field(default_factory=AccountStats)
 
 
@@ -357,6 +358,7 @@ class AccountManager:
                     account.failures = data.get("failures", 0)
                     account.last_failure_time = data.get("last_failure_time", 0.0)
                     account.models_cached_at = data.get("models_cached_at", 0.0)
+                    account.disabled = data.get("disabled", False)
                     
                     stats_data = data.get("stats", {})
                     account.stats = AccountStats(
@@ -383,6 +385,7 @@ class AccountManager:
                     "failures": account.failures,
                     "last_failure_time": account.last_failure_time,
                     "models_cached_at": account.models_cached_at,
+                    "disabled": account.disabled,
                     "stats": {
                         "total_requests": account.stats.total_requests,
                         "successful_requests": account.stats.successful_requests,
@@ -667,7 +670,11 @@ class AccountManager:
             if len(self._accounts) == 1:
                 account_id = list(self._accounts.keys())[0]
                 account = self._accounts[account_id]
-                
+
+                # Skip if disabled
+                if account.disabled:
+                    return None
+
                 # Skip if already tried in current failover loop
                 if exclude_accounts and account_id in exclude_accounts:
                     return None
@@ -713,6 +720,10 @@ class AccountManager:
                 
                 # Skip accounts already tried in current failover loop
                 if exclude_accounts and account_id in exclude_accounts:
+                    continue
+
+                # Skip disabled accounts
+                if account.disabled:
                     continue
                 
                 # Check Circuit Breaker (Half-Open state with exponential backoff)
@@ -927,6 +938,8 @@ class AccountManager:
         status = "healthy" if account.failures == 0 else "degraded"
         if not account.auth_manager:
             status = "uninitialized"
+        if account.disabled:
+            status = "disabled"
 
         return {
             "id": account.id,
@@ -934,6 +947,7 @@ class AccountManager:
             "region": region,
             "profile_arn": profile_arn,
             "status": status,
+            "disabled": account.disabled,
             "failures": account.failures,
             "stats": {
                 "total": account.stats.total_requests,
@@ -1022,6 +1036,25 @@ class AccountManager:
 
         self._dirty = True
         logger.info(f"Admin API: Removed account {account_id}")
+        return True
+
+    async def set_account_disabled(self, account_id: str, disabled: bool) -> bool:
+        """
+        Enable or disable an account.
+
+        Args:
+            account_id: Account ID
+            disabled: True to disable, False to enable
+
+        Returns:
+            True if updated, False if account not found
+        """
+        if account_id not in self._accounts:
+            return False
+        self._accounts[account_id].disabled = disabled
+        self._dirty = True
+        state = "disabled" if disabled else "enabled"
+        logger.info(f"Admin API: Account {account_id} {state}")
         return True
 
     def _save_credentials_config(self) -> None:

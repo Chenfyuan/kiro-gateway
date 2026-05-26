@@ -1,0 +1,106 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e363]:
+    - generic [ref=e365]:
+      - generic [ref=e366]:
+        - generic [ref=e367] [cursor=pointer]:
+          - img "编组 2" [ref=e369]
+          - generic [ref=e374]: AI 账号调度平台
+        - menubar [ref=e376]:
+          - menuitem "控制台" [ref=e377] [cursor=pointer]:
+            - generic [ref=e378]: 控制台
+      - generic [ref=e383] [cursor=pointer]:
+        - img [ref=e384]
+        - generic [ref=e385]: admin
+    - generic [ref=e386]:
+      - generic [ref=e390]:
+        - generic [ref=e392]: AI 账号调度平台
+        - menubar [ref=e394]:
+          - menuitem "账号调度管理" [ref=e396]:
+            - generic [ref=e397] [cursor=pointer]:
+              - img [ref=e399]
+              - generic [ref=e402]: 账号调度管理
+              - img [ref=e404]
+          - menuitem "外部代理管理" [ref=e407]:
+            - generic [ref=e408] [cursor=pointer]:
+              - img [ref=e410]
+              - generic [ref=e413]: 外部代理管理
+              - img [ref=e415]
+          - menuitem "Redis 运行态" [ref=e418] [cursor=pointer]:
+            - img [ref=e420]
+            - generic [ref=e423]: Redis 运行态
+          - menuitem "大模型运营看板" [ref=e425] [cursor=pointer]:
+            - img [ref=e427]
+            - generic [ref=e430]: 大模型运营看板
+          - menuitem "系统权限" [ref=e432] [cursor=pointer]:
+            - img [ref=e434]
+            - generic [ref=e437]: 系统权限
+        - img [ref=e440] [cursor=pointer]
+      - generic [ref=e442]:
+        - navigation "面包屑" [ref=e444]:
+          - generic [ref=e445]:
+            - link "AI 账号调度平台" [ref=e446]
+            - text: /
+          - link "代理账号管理" [ref=e448]
+        - main [ref=e449]:
+          - generic [ref=e450]:
+            - generic [ref=e451]:
+              - generic [ref=e452]:
+                - button "同步远端账号" [ref=e453] [cursor=pointer]:
+                  - generic [ref=e454]: 同步远端账号
+                - button "新增账号" [ref=e455] [cursor=pointer]:
+                  - generic [ref=e456]: 新增账号
+              - generic [ref=e458]:
+                - generic [ref=e460]:
+                  - generic [ref=e461]:
+                    - combobox [ref=e463]
+                    - generic [ref=e464]: 所属代理服务
+                  - img [ref=e467] [cursor=pointer]
+                - generic [ref=e470] [cursor=pointer]:
+                  - generic:
+                    - combobox [ref=e472]
+                    - generic [ref=e473]: 状态
+                  - img [ref=e476]
+            - generic [ref=e480]:
+              - table [ref=e482]:
+                - rowgroup [ref=e493]:
+                  - row "账号名称 所属服务 认证类型 区域 远端状态 远端统计 上次同步 状态 操作" [ref=e494]:
+                    - columnheader "账号名称" [ref=e495]:
+                      - generic [ref=e496]: 账号名称
+                    - columnheader "所属服务" [ref=e497]:
+                      - generic [ref=e498]: 所属服务
+                    - columnheader "认证类型" [ref=e499]:
+                      - generic [ref=e500]: 认证类型
+                    - columnheader "区域" [ref=e501]:
+                      - generic [ref=e502]: 区域
+                    - columnheader "远端状态" [ref=e503]:
+                      - generic [ref=e504]: 远端状态
+                    - columnheader "远端统计" [ref=e505]:
+                      - generic [ref=e506]: 远端统计
+                    - columnheader "上次同步" [ref=e507]:
+                      - generic [ref=e508]: 上次同步
+                    - columnheader "状态" [ref=e509]:
+                      - generic [ref=e510]: 状态
+                    - columnheader "操作" [ref=e511]:
+                      - generic [ref=e512]: 操作
+              - generic [ref=e516]:
+                - table:
+                  - rowgroup
+                - generic [ref=e518]: 暂无数据
+            - generic [ref=e520]:
+              - button "上一页" [disabled] [ref=e521]:
+                - generic:
+                  - img
+              - list [ref=e522]:
+                - listitem "第 1 页" [ref=e523]: "1"
+              - button "下一页" [disabled] [ref=e524]:
+                - generic:
+                  - img
+              - generic [ref=e527] [cursor=pointer]:
+                - generic:
+                  - combobox [ref=e529]
+                  - generic [ref=e530]: 20条/页
+                - img [ref=e533]
+              - generic [ref=e536]: 共 0 条
+  - alert [ref=e537]:
+    - img [ref=e539]
+    - paragraph [ref=e541]: 登录成功

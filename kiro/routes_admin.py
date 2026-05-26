@@ -35,6 +35,10 @@ class AddAccountRequest(BaseModel):
     data: Optional[dict] = Field(default=None, description="Full Kiro IDE export JSON (for type=kiro_export)")
 
 
+class UpdateAccountRequest(BaseModel):
+    disabled: Optional[bool] = Field(default=None, description="Set to true to disable, false to enable")
+
+
 @router.get("/accounts")
 async def list_accounts(request: Request, authorization: str = Header(None)):
     _verify_admin_auth(authorization)
@@ -83,6 +87,22 @@ async def add_account(request: Request, body: AddAccountRequest, authorization: 
     except Exception as e:
         logger.error(f"Failed to add account: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/accounts/{account_id:path}")
+async def update_account(request: Request, account_id: str, body: UpdateAccountRequest, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+
+    if body.disabled is not None:
+        ok = await account_manager.set_account_disabled(account_id, body.disabled)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+
+    info = account_manager.get_account_info(account_id)
+    if not info:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+    return {"status": "ok", "account": info}
 
 
 @router.delete("/accounts/{account_id:path}")

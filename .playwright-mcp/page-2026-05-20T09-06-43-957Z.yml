@@ -1,0 +1,90 @@
+- generic [ref=e45]:
+  - generic [ref=e47]:
+    - generic [ref=e48]:
+      - generic [ref=e49] [cursor=pointer]:
+        - img "编组 2" [ref=e51]
+        - generic [ref=e56]: AI 账号调度平台
+      - menubar [ref=e58]:
+        - menuitem "控制台" [ref=e59] [cursor=pointer]:
+          - generic [ref=e60]: 控制台
+    - generic [ref=e65] [cursor=pointer]:
+      - img [ref=e66]
+      - generic [ref=e67]: admin
+  - generic [ref=e68]:
+    - generic [ref=e72]:
+      - generic [ref=e74]: AI 账号调度平台
+      - menubar [ref=e76]:
+        - menuitem "账号调度管理" [ref=e78]:
+          - generic [ref=e79] [cursor=pointer]:
+            - img [ref=e81]
+            - generic [ref=e84]: 账号调度管理
+            - img [ref=e86]
+        - menuitem "Redis 运行态" [ref=e89] [cursor=pointer]:
+          - img [ref=e91]
+          - generic [ref=e94]: Redis 运行态
+        - menuitem "大模型运营看板" [ref=e96] [cursor=pointer]:
+          - img [ref=e98]
+          - generic [ref=e101]: 大模型运营看板
+        - menuitem "系统权限" [ref=e103] [cursor=pointer]:
+          - img [ref=e105]
+          - generic [ref=e108]: 系统权限
+      - img [ref=e111] [cursor=pointer]
+    - generic [ref=e113]:
+      - navigation "面包屑" [ref=e115]:
+        - generic [ref=e116]:
+          - link "AI 账号调度平台" [ref=e117]
+          - text: /
+        - link "模型代理服务" [ref=e189]
+      - main [ref=e120]:
+        - generic [ref=e190]:
+          - generic [ref=e191]:
+            - button "新增代理服务" [ref=e193] [cursor=pointer]:
+              - generic [ref=e194]: 新增代理服务
+            - generic [ref=e196]:
+              - textbox "服务名称" [ref=e199]
+              - generic [ref=e201] [cursor=pointer]:
+                - generic:
+                  - combobox [ref=e203]
+                  - generic [ref=e204]: 状态
+                - img [ref=e207]
+          - generic [ref=e210]:
+            - generic [ref=e211]:
+              - table [ref=e213]:
+                - rowgroup [ref=e223]:
+                  - row "服务名称 代理地址 API Key 外网代理 状态 备注 创建时间 操作" [ref=e224]:
+                    - columnheader "服务名称" [ref=e225]:
+                      - generic [ref=e226]: 服务名称
+                    - columnheader "代理地址" [ref=e227]:
+                      - generic [ref=e228]: 代理地址
+                    - columnheader "API Key" [ref=e229]:
+                      - generic [ref=e230]: API Key
+                    - columnheader "外网代理" [ref=e231]:
+                      - generic [ref=e232]: 外网代理
+                    - columnheader "状态" [ref=e233]:
+                      - generic [ref=e234]: 状态
+                    - columnheader "备注" [ref=e235]:
+                      - generic [ref=e236]: 备注
+                    - columnheader "创建时间" [ref=e237]:
+                      - generic [ref=e238]: 创建时间
+                    - columnheader "操作" [ref=e239]:
+                      - generic [ref=e240]: 操作
+              - generic [ref=e244]:
+                - table:
+                  - rowgroup
+                - generic [ref=e246]: 暂无数据
+            - img [ref=e249]
+          - generic [ref=e252]:
+            - button "上一页" [disabled] [ref=e253]:
+              - generic:
+                - img
+            - list [ref=e254]:
+              - listitem "第 1 页" [ref=e255]: "1"
+            - button "下一页" [disabled] [ref=e256]:
+              - generic:
+                - img
+            - generic [ref=e259] [cursor=pointer]:
+              - generic:
+                - combobox [ref=e261]
+                - generic [ref=e262]: 20条/页
+              - img [ref=e265]
+            - generic [ref=e268]: 共 0 条

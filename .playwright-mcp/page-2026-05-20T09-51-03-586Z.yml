@@ -1,0 +1,16 @@
+- generic [ref=e324]:
+  - generic [ref=e326]: 欢迎使用
+  - generic [ref=e328]:
+    - generic [ref=e331]:
+      - textbox "请输入账号" [ref=e332]: admin
+      - img [ref=e336]
+    - generic [ref=e340]:
+      - textbox "请输入密码" [ref=e341]
+      - img [ref=e345]
+      - img [ref=e349] [cursor=pointer]
+    - generic [ref=e354] [cursor=pointer]:
+      - generic [ref=e355]:
+        - checkbox "记住我"
+      - generic [ref=e357]: 记住我
+    - button "立即登录" [ref=e360] [cursor=pointer]:
+      - generic [ref=e361]: 立即登录

@@ -1,0 +1,84 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e45]:
+    - generic [ref=e47]:
+      - generic [ref=e48]:
+        - generic [ref=e49] [cursor=pointer]:
+          - img "编组 2" [ref=e51]
+          - generic [ref=e56]: AI 账号调度平台
+        - menubar [ref=e58]:
+          - menuitem "控制台" [ref=e59] [cursor=pointer]:
+            - generic [ref=e60]: 控制台
+      - generic [ref=e65] [cursor=pointer]:
+        - img [ref=e66]
+        - generic [ref=e67]: admin
+    - generic [ref=e68]:
+      - generic [ref=e72]:
+        - generic [ref=e74]: AI 账号调度平台
+        - menubar [ref=e76]:
+          - menuitem "账号调度管理" [ref=e78]:
+            - generic [ref=e79] [cursor=pointer]:
+              - img [ref=e81]
+              - generic [ref=e84]: 账号调度管理
+              - img [ref=e86]
+          - menuitem "Redis 运行态" [ref=e89] [cursor=pointer]:
+            - img [ref=e91]
+            - generic [ref=e94]: Redis 运行态
+          - menuitem "大模型运营看板" [ref=e96] [cursor=pointer]:
+            - img [ref=e98]
+            - generic [ref=e101]: 大模型运营看板
+          - menuitem "系统权限" [ref=e103] [cursor=pointer]:
+            - img [ref=e105]
+            - generic [ref=e108]: 系统权限
+        - img [ref=e111] [cursor=pointer]
+      - generic [ref=e113]:
+        - navigation "面包屑" [ref=e115]:
+          - generic [ref=e116]:
+            - link "AI 账号调度平台" [ref=e117]
+            - text: /
+          - link "账号池" [ref=e119]
+        - main [ref=e120]:
+          - generic [ref=e121]:
+            - generic [ref=e122]:
+              - button "新建账号池" [ref=e124] [cursor=pointer]:
+                - generic [ref=e125]: 新建账号池
+              - textbox "请输入账号池编码" [ref=e130]
+            - generic [ref=e133]:
+              - table [ref=e135]:
+                - rowgroup [ref=e144]:
+                  - row "账号池 厂商 状态 访问地址 密钥数 更新时间 操作" [ref=e145]:
+                    - columnheader "账号池" [ref=e146]:
+                      - generic [ref=e147]: 账号池
+                    - columnheader "厂商" [ref=e148]:
+                      - generic [ref=e149]: 厂商
+                    - columnheader "状态" [ref=e150]:
+                      - generic [ref=e151]: 状态
+                    - columnheader "访问地址" [ref=e152]:
+                      - generic [ref=e153]: 访问地址
+                    - columnheader "密钥数" [ref=e154]:
+                      - generic [ref=e155]: 密钥数
+                    - columnheader "更新时间" [ref=e156]:
+                      - generic [ref=e157]: 更新时间
+                    - columnheader "操作" [ref=e158]:
+                      - generic [ref=e159]: 操作
+              - generic [ref=e163]:
+                - table:
+                  - rowgroup
+                - generic [ref=e165]: 暂无数据
+            - generic [ref=e167]:
+              - button "上一页" [disabled] [ref=e168]:
+                - generic:
+                  - img
+              - list [ref=e169]:
+                - listitem "第 1 页" [ref=e170]: "1"
+              - button "下一页" [disabled] [ref=e171]:
+                - generic:
+                  - img
+              - generic [ref=e174] [cursor=pointer]:
+                - generic:
+                  - combobox [ref=e176]
+                  - generic [ref=e177]: 20条/页
+                - img [ref=e180]
+              - generic [ref=e183]: 共 0 条
+  - alert [ref=e184]:
+    - img [ref=e186]
+    - paragraph [ref=e188]: 登录成功
