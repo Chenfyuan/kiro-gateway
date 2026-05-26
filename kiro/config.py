@@ -536,10 +536,10 @@ SCHEMA_SANITIZE_ENABLED: bool = os.getenv("SCHEMA_SANITIZE_ENABLED", "false").lo
 ACCOUNT_SYSTEM: bool = os.getenv("ACCOUNT_SYSTEM", "false").lower() in ("true", "1", "yes")
 
 # Path to credentials configuration file
-ACCOUNTS_CONFIG_FILE: str = os.getenv("ACCOUNTS_CONFIG_FILE", "credentials.json")
+ACCOUNTS_CONFIG_FILE: str = os.getenv("ACCOUNTS_CONFIG_FILE", "data/credentials.json")
 
 # Path to runtime state file
-ACCOUNTS_STATE_FILE: str = os.getenv("ACCOUNTS_STATE_FILE", "state.json")
+ACCOUNTS_STATE_FILE: str = os.getenv("ACCOUNTS_STATE_FILE", "data/state.json")
 
 # ==================================================================================================
 # Circuit Breaker Settings

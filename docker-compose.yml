@@ -43,14 +43,9 @@ services:
       - .env
     
     volumes:
-      # Mount credentials file (if using KIRO_CREDS_FILE)
-      # Uncomment and adjust path as needed:
-      # - ~/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro
-      
-      # Mount kiro-cli database (if using KIRO_CLI_DB_FILE)
-      # Uncomment and adjust path as needed:
-      # - ~/.local/share/kiro-cli:/home/kiro/.local/share/kiro-cli  # Linux/macOS
-      
+      # Persist credentials and state across container restarts
+      - ./data:/app/data
+
       # Mount debug logs directory (optional, for debugging)
       - ./debug_logs:/app/debug_logs
     

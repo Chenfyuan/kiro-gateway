@@ -27,8 +27,8 @@ COPY --chown=kiro:kiro . .
 # (in case they were copied from build context or cache)
 RUN rm -f credentials.json state.json
 
-# Create directory for debug logs with proper permissions
-RUN mkdir -p debug_logs && chown -R kiro:kiro debug_logs
+# Create directories for persistent data and debug logs
+RUN mkdir -p data debug_logs && chown -R kiro:kiro data debug_logs
 
 # Switch to non-root user
 USER kiro
