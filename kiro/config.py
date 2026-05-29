@@ -98,6 +98,25 @@ SERVER_PORT: int = int(os.getenv("SERVER_PORT", str(DEFAULT_SERVER_PORT)))
 # API key for proxy access (clients must pass it in Authorization header)
 PROXY_API_KEY: str = os.getenv("PROXY_API_KEY", "my-super-secret-password-123")
 
+# Runtime API key management: persisted key file takes priority over env var
+_API_KEY_FILE = Path("data/api_key.txt")
+if _API_KEY_FILE.exists():
+    _stored_key = _API_KEY_FILE.read_text().strip()
+    if _stored_key:
+        PROXY_API_KEY = _stored_key
+
+
+def get_proxy_api_key() -> str:
+    global PROXY_API_KEY
+    return PROXY_API_KEY
+
+
+def set_proxy_api_key(new_key: str) -> None:
+    global PROXY_API_KEY
+    PROXY_API_KEY = new_key
+    _API_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _API_KEY_FILE.write_text(new_key)
+
 # ==================================================================================================
 # VPN/Proxy Settings for Kiro API Access
 # ==================================================================================================

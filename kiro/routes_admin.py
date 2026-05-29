@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Request, Header
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from kiro.config import PROXY_API_KEY
+from kiro.config import get_proxy_api_key, set_proxy_api_key
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -25,7 +25,7 @@ def _verify_admin_auth(authorization: Optional[str]) -> None:
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
     parts = authorization.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer" or parts[1] != PROXY_API_KEY:
+    if len(parts) != 2 or parts[0].lower() != "bearer" or parts[1] != get_proxy_api_key():
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
@@ -204,3 +204,15 @@ async def get_logs_stats(request: Request, days: int = 7, authorization: str = H
     if not req_logger:
         raise HTTPException(status_code=503, detail="Request logger not initialized")
     return await req_logger.get_stats(days)
+
+
+class UpdateApiKeyRequest(BaseModel):
+    new_key: str = Field(min_length=8, description="New API key (min 8 characters)")
+
+
+@router.put("/config/api-key")
+async def update_api_key(body: UpdateApiKeyRequest, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    set_proxy_api_key(body.new_key)
+    logger.info("API key updated successfully")
+    return {"status": "ok", "message": "API key updated. Use the new key for subsequent requests."}

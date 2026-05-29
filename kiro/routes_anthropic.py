@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from loguru import logger
 
-from kiro.config import PROXY_API_KEY, PROFILE_ARN
+from kiro.config import get_proxy_api_key, PROFILE_ARN
 from kiro.models_anthropic import (
     AnthropicMessagesRequest,
     AnthropicCountTokensRequest,
@@ -93,11 +93,11 @@ async def verify_anthropic_api_key(
         HTTPException: 401 if key is invalid or missing
     """
     # Check x-api-key first (Anthropic native)
-    if x_api_key and x_api_key == PROXY_API_KEY:
+    if x_api_key and x_api_key == get_proxy_api_key():
         return True
-    
+
     # Fall back to Authorization: Bearer
-    if authorization and authorization == f"Bearer {PROXY_API_KEY}":
+    if authorization and authorization == f"Bearer {get_proxy_api_key()}":
         return True
     
     logger.warning("Access attempt with invalid API key (Anthropic endpoint)")
