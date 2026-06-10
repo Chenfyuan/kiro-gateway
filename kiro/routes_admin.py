@@ -132,6 +132,61 @@ async def reset_circuit_breaker(request: Request, account_id: str, authorization
     return {"status": "ok", "account": info}
 
 
+@router.post("/accounts/{account_id:path}/set-sticky")
+async def set_sticky_account(request: Request, account_id: str, authorization: str = Header(None)):
+    """Manually set an account as the sticky (priority) account."""
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+
+    all_account_ids = list(account_manager._accounts.keys())
+    if account_id not in all_account_ids:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+
+    target_index = all_account_ids.index(account_id)
+    account_manager._current_account_index = target_index
+    account_manager._dirty = True
+    logger.info(f"Admin API: Set sticky account to {account_id} (index={target_index})")
+
+    return {"status": "ok", "sticky_account_id": account_id}
+
+
+@router.post("/accounts/{account_id:path}/test-connection")
+async def test_account_connection(request: Request, account_id: str, authorization: str = Header(None)):
+    """Test if an account's credentials are still valid by calling getUsageLimits."""
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+
+    account = account_manager._accounts.get(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+
+    if not account.auth_manager:
+        return {"status": "error", "message": "Account not initialized", "connected": False}
+
+    import time
+    import httpx
+    from kiro.utils import get_kiro_headers
+
+    start_time = time.time()
+    try:
+        region = account.auth_manager.region
+        url = f"https://codewhisperer.{region}.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+        token = await account.auth_manager.get_access_token()
+        headers = get_kiro_headers(account.auth_manager, token)
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url, headers=headers)
+            elapsed = round((time.time() - start_time) * 1000)
+
+            if response.status_code == 200:
+                return {"status": "ok", "connected": True, "response_time_ms": elapsed, "message": "凭证有效"}
+            else:
+                return {"status": "error", "connected": False, "response_time_ms": elapsed, "message": f"HTTP {response.status_code}"}
+    except Exception as e:
+        elapsed = round((time.time() - start_time) * 1000)
+        return {"status": "error", "connected": False, "response_time_ms": elapsed, "message": str(e)}
+
+
 @router.delete("/accounts/{account_id:path}")
 async def remove_account(request: Request, account_id: str, authorization: str = Header(None)):
     _verify_admin_auth(authorization)
