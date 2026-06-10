@@ -1,1 +1,0 @@
-[     977ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "new-password"): (More info: https://goo.gl/9p2vKq) %o @ https://signinuat.midea.com/login?service=http%3A%2F%2Faiconsole-sit-ga.midea.com%3A8080%2Fapi%2Fv1%2Fauth%2Fsso%2Flogin%3Fredirect%3D%252Fpools:0

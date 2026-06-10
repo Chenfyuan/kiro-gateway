@@ -113,6 +113,25 @@ async def update_account(request: Request, account_id: str, body: UpdateAccountR
     return {"status": "ok", "account": info}
 
 
+@router.post("/accounts/{account_id:path}/reset-circuit")
+async def reset_circuit_breaker(request: Request, account_id: str, authorization: str = Header(None)):
+    """Reset circuit breaker for an account (clear failures and cooldown)."""
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+
+    account = account_manager._accounts.get(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+
+    account.failures = 0
+    account.last_failure_time = 0.0
+    account_manager._dirty = True
+    logger.info(f"Admin API: Reset circuit breaker for {account_id}")
+
+    info = account_manager.get_account_info(account_id)
+    return {"status": "ok", "account": info}
+
+
 @router.delete("/accounts/{account_id:path}")
 async def remove_account(request: Request, account_id: str, authorization: str = Header(None)):
     _verify_admin_auth(authorization)
@@ -204,6 +223,59 @@ async def get_logs_stats(request: Request, days: int = 7, authorization: str = H
     if not req_logger:
         raise HTTPException(status_code=503, detail="Request logger not initialized")
     return await req_logger.get_stats(days)
+
+
+@router.get("/dispatch-status")
+async def dispatch_status(request: Request, authorization: str = Header(None)):
+    """Get current dispatch/scheduling status for visualization."""
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+
+    all_account_ids = list(account_manager._accounts.keys())
+    current_index = account_manager._current_account_index
+    sticky_account_id = all_account_ids[current_index] if all_account_ids and current_index < len(all_account_ids) else None
+
+    import time
+    from kiro.config import ACCOUNT_RECOVERY_TIMEOUT, ACCOUNT_MAX_BACKOFF_MULTIPLIER
+
+    accounts_status = []
+    for account_id, account in account_manager._accounts.items():
+        cooldown_remaining = 0
+        if account.failures > 0:
+            backoff_multiplier = min(2 ** (account.failures - 1), ACCOUNT_MAX_BACKOFF_MULTIPLIER)
+            effective_timeout = ACCOUNT_RECOVERY_TIMEOUT * backoff_multiplier
+            elapsed = time.time() - account.last_failure_time
+            cooldown_remaining = max(0, effective_timeout - elapsed)
+
+        accounts_status.append({
+            "id": account_id,
+            "email": account.email,
+            "is_sticky": account_id == sticky_account_id,
+            "status": "disabled" if account.disabled else ("healthy" if account.failures == 0 else "circuit_open"),
+            "failures": account.failures,
+            "cooldown_remaining_seconds": round(cooldown_remaining),
+            "last_failure_time": account.last_failure_time,
+            "current_usage": account.current_usage,
+            "usage_limit": account.usage_limit,
+            "stats": {
+                "total": account.stats.total_requests,
+                "success": account.stats.successful_requests,
+                "failed": account.stats.failed_requests,
+            },
+        })
+
+    healthy_count = sum(1 for a in accounts_status if a["status"] == "healthy")
+    circuit_open_count = sum(1 for a in accounts_status if a["status"] == "circuit_open")
+    disabled_count = sum(1 for a in accounts_status if a["status"] == "disabled")
+
+    return {
+        "total_accounts": len(all_account_ids),
+        "healthy": healthy_count,
+        "circuit_open": circuit_open_count,
+        "disabled": disabled_count,
+        "sticky_account_id": sticky_account_id,
+        "accounts": accounts_status,
+    }
 
 
 class UpdateApiKeyRequest(BaseModel):
