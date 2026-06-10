@@ -1015,8 +1015,10 @@ class AccountManager:
             profile_arn = account.auth_manager.profile_arn
 
         models_count = 0
+        models_list = []
         if account.model_resolver:
-            models_count = len(account.model_resolver.get_available_models())
+            models_list = sorted(account.model_resolver.get_available_models())
+            models_count = len(models_list)
 
         status = "healthy" if account.failures == 0 else "degraded"
         if not account.auth_manager:
@@ -1033,12 +1035,14 @@ class AccountManager:
             "status": status,
             "disabled": account.disabled,
             "failures": account.failures,
+            "last_failure_time": account.last_failure_time,
             "stats": {
                 "total": account.stats.total_requests,
                 "success": account.stats.successful_requests,
                 "failed": account.stats.failed_requests,
             },
             "models_count": models_count,
+            "models": models_list,
             "current_usage": account.current_usage,
             "usage_limit": account.usage_limit,
             "quota_updated_at": account.quota_updated_at,
