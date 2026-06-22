@@ -169,13 +169,18 @@ async def test_account_connection(request: Request, account_id: str, authorizati
 
     start_time = time.time()
     try:
+        url = f"https://q.{account.auth_manager.api_region}.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
         token = await account.auth_manager.get_access_token()
-        elapsed = round((time.time() - start_time) * 1000)
+        headers = get_kiro_headers(account.auth_manager, token)
 
-        if token:
-            return {"status": "ok", "connected": True, "response_time_ms": elapsed, "message": "凭证有效"}
-        else:
-            return {"status": "error", "connected": False, "response_time_ms": elapsed, "message": "无法获取 token"}
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url, headers=headers)
+            elapsed = round((time.time() - start_time) * 1000)
+
+            if response.status_code == 200:
+                return {"status": "ok", "connected": True, "response_time_ms": elapsed, "message": "凭证有效"}
+            else:
+                return {"status": "error", "connected": False, "response_time_ms": elapsed, "message": f"HTTP {response.status_code}"}
     except Exception as e:
         elapsed = round((time.time() - start_time) * 1000)
         return {"status": "error", "connected": False, "response_time_ms": elapsed, "message": str(e)}

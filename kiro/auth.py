@@ -219,6 +219,7 @@ class KiroAuthManager:
         # - API/Q hosts: use determined API region (for Q Developer API calls)
         sso_region_for_oidc = self._sso_region or region
         self._refresh_url = get_kiro_refresh_url(sso_region_for_oidc)
+        self._api_region = final_api_region
         self._api_host = get_kiro_api_host(final_api_region)
         self._q_host = get_kiro_q_host(final_api_region)
         
@@ -1032,7 +1033,12 @@ class KiroAuthManager:
     def api_host(self) -> str:
         """API host for the current region."""
         return self._api_host
-    
+
+    @property
+    def api_region(self) -> str:
+        """API region (used for Q endpoint routing)."""
+        return self._api_region
+
     @property
     def q_host(self) -> str:
         """Q API host for the current region."""
