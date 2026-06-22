@@ -609,8 +609,7 @@ class AccountManager:
         Returns:
             Email string or None
         """
-        region = auth_manager.region
-        url = f"https://codewhisperer.{region}.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+        url = f"{auth_manager.api_host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
         token = await auth_manager.get_access_token()
         headers = get_kiro_headers(auth_manager, token)
 
@@ -633,8 +632,7 @@ class AccountManager:
         """
         if not account.auth_manager:
             return
-        region = account.auth_manager.region
-        url = f"https://codewhisperer.{region}.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+        url = f"{account.auth_manager.api_host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
         token = await account.auth_manager.get_access_token()
         headers = get_kiro_headers(account.auth_manager, token)
 
