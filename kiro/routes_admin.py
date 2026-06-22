@@ -301,11 +301,20 @@ async def dispatch_status(request: Request, authorization: str = Header(None)):
             elapsed = time.time() - account.last_failure_time
             cooldown_remaining = max(0, effective_timeout - elapsed)
 
+        if account.disabled:
+            status = "disabled"
+        elif account.failures > 0:
+            status = "circuit_open"
+        elif account_manager._is_quota_exhausted(account):
+            status = "quota_low"
+        else:
+            status = "healthy"
+
         accounts_status.append({
             "id": account_id,
             "email": account.email,
             "is_sticky": account_id == sticky_account_id,
-            "status": "disabled" if account.disabled else ("healthy" if account.failures == 0 else "circuit_open"),
+            "status": status,
             "failures": account.failures,
             "cooldown_remaining_seconds": round(cooldown_remaining),
             "last_failure_time": account.last_failure_time,
@@ -321,12 +330,14 @@ async def dispatch_status(request: Request, authorization: str = Header(None)):
     healthy_count = sum(1 for a in accounts_status if a["status"] == "healthy")
     circuit_open_count = sum(1 for a in accounts_status if a["status"] == "circuit_open")
     disabled_count = sum(1 for a in accounts_status if a["status"] == "disabled")
+    quota_low_count = sum(1 for a in accounts_status if a["status"] == "quota_low")
 
     return {
         "total_accounts": len(all_account_ids),
         "healthy": healthy_count,
         "circuit_open": circuit_open_count,
         "disabled": disabled_count,
+        "quota_low": quota_low_count,
         "sticky_account_id": sticky_account_id,
         "accounts": accounts_status,
     }

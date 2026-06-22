@@ -587,6 +587,11 @@ ACCOUNT_PROBABILISTIC_RETRY_CHANCE: float = float(os.getenv("ACCOUNT_PROBABILIST
 # Cache is refreshed only when account is used (not in background)
 ACCOUNT_CACHE_TTL: int = int(os.getenv("ACCOUNT_CACHE_TTL", "43200"))
 
+# Quota threshold for automatic account switching (0.0 - 1.0)
+# When current_usage / usage_limit >= threshold, account is deprioritized in scheduling
+# Other accounts with available quota will be preferred
+ACCOUNT_QUOTA_THRESHOLD: float = float(os.getenv("ACCOUNT_QUOTA_THRESHOLD", "0.9"))
+
 # ==================================================================================================
 # State Persistence Settings
 # ==================================================================================================

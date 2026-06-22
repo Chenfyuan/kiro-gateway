@@ -56,6 +56,7 @@ from kiro.config import (
     ACCOUNT_MAX_BACKOFF_MULTIPLIER,
     ACCOUNT_PROBABILISTIC_RETRY_CHANCE,
     ACCOUNT_CACHE_TTL,
+    ACCOUNT_QUOTA_THRESHOLD,
     STATE_SAVE_INTERVAL_SECONDS,
     FALLBACK_MODELS,
 )
@@ -741,6 +742,12 @@ class AccountManager:
         finally:
             await http_client.close()
     
+    def _is_quota_exhausted(self, account: Account) -> bool:
+        """Check if account's quota usage exceeds threshold."""
+        if account.usage_limit is None or account.usage_limit <= 0:
+            return False
+        return (account.current_usage or 0) / account.usage_limit >= ACCOUNT_QUOTA_THRESHOLD
+
     async def get_next_account(self, model: str, exclude_accounts: Optional[set] = None) -> Optional[Account]:
         """
         Get next available account for model (Circuit Breaker + Sticky).
@@ -800,72 +807,78 @@ class AccountManager:
                 # No model validation - let Kiro API decide (gateway, not gatekeeper)
                 return account
             
-            # Multi-account logic: GLOBAL sticky
+            # Multi-account logic: GLOBAL sticky with quota-aware scheduling
             normalized_model = normalize_model_name(model)
-            
+
             # ALWAYS start from GLOBAL index (one current account for ALL models)
             start_index = self._current_account_index
-            
+
             # ALWAYS iterate over ALL accounts
             all_account_ids = list(self._accounts.keys())
-            
-            for i in range(len(all_account_ids)):
-                current_index = (start_index + i) % len(all_account_ids)
-                account_id = all_account_ids[current_index]
-                account = self._accounts[account_id]
-                
-                # Skip accounts already tried in current failover loop
-                if exclude_accounts and account_id in exclude_accounts:
-                    continue
 
-                # Skip disabled accounts
-                if account.disabled:
-                    continue
-                
-                # Check Circuit Breaker (Half-Open state with exponential backoff)
-                if account.failures > 0:
-                    time_since_failure = time.time() - account.last_failure_time
-                    
-                    # Exponential backoff: base * 2^(failures - 1), capped at MAX_MULTIPLIER
-                    # 1 failure: 60s, 2: 120s, 3: 240s, ..., 12+: 86400s (1 day cap)
-                    backoff_multiplier = min(2 ** (account.failures - 1), ACCOUNT_MAX_BACKOFF_MULTIPLIER)
-                    effective_timeout = ACCOUNT_RECOVERY_TIMEOUT * backoff_multiplier
-                    
-                    if time_since_failure < effective_timeout:
-                        # Probabilistic retry (10% chance)
-                        if random.random() > ACCOUNT_PROBABILISTIC_RETRY_CHANCE:
-                            continue
-                        else:
-                            logger.info(f"Probabilistic retry for broken account {account_id}")
-                    else:
-                        # Half-Open: recovery timeout passed
-                        logger.info(f"Half-Open state for {account_id} (recovery timeout passed, effective={effective_timeout}s)")
-                
-                # Lazy initialization
-                if account.auth_manager is None:
-                    success = await self._initialize_account(account_id)
-                    if not success:
-                        account.failures += 1
-                        self._dirty = True
+            # Two-pass selection: first pass skips quota-exhausted accounts,
+            # second pass allows them as fallback
+            for allow_quota_exhausted in (False, True):
+                for i in range(len(all_account_ids)):
+                    current_index = (start_index + i) % len(all_account_ids)
+                    account_id = all_account_ids[current_index]
+                    account = self._accounts[account_id]
+
+                    # Skip accounts already tried in current failover loop
+                    if exclude_accounts and account_id in exclude_accounts:
                         continue
-                
-                # Check TTL and refresh if needed
-                if account.models_cached_at > 0:
-                    age = time.time() - account.models_cached_at
-                    if age > ACCOUNT_CACHE_TTL:
-                        try:
-                            await self._refresh_account_models(account_id)
-                        except Exception as e:
-                            logger.warning(f"Failed to refresh models for {account_id}: {e}")
-                # # Check if model is available on this account
-                # available_models = account.model_resolver.get_available_models()
-                # if normalized_model not in available_models:
-                #     continue
-                
-                # No model validation - let Kiro API decide (gateway, not gatekeeper)
-                # Account is suitable!
-                return account
-            
+
+                    # Skip disabled accounts
+                    if account.disabled:
+                        continue
+
+                    # Check Circuit Breaker (Half-Open state with exponential backoff)
+                    if account.failures > 0:
+                        time_since_failure = time.time() - account.last_failure_time
+
+                        # Exponential backoff: base * 2^(failures - 1), capped at MAX_MULTIPLIER
+                        # 1 failure: 60s, 2: 120s, 3: 240s, ..., 12+: 86400s (1 day cap)
+                        backoff_multiplier = min(2 ** (account.failures - 1), ACCOUNT_MAX_BACKOFF_MULTIPLIER)
+                        effective_timeout = ACCOUNT_RECOVERY_TIMEOUT * backoff_multiplier
+
+                        if time_since_failure < effective_timeout:
+                            # Probabilistic retry (10% chance)
+                            if random.random() > ACCOUNT_PROBABILISTIC_RETRY_CHANCE:
+                                continue
+                            else:
+                                logger.info(f"Probabilistic retry for broken account {account_id}")
+                        else:
+                            # Half-Open: recovery timeout passed
+                            logger.info(f"Half-Open state for {account_id} (recovery timeout passed, effective={effective_timeout}s)")
+
+                    # Skip quota-exhausted accounts in first pass
+                    if not allow_quota_exhausted and self._is_quota_exhausted(account):
+                        logger.debug(f"Skipping quota-exhausted account {account_id} ({account.current_usage}/{account.usage_limit})")
+                        continue
+
+                    # Lazy initialization
+                    if account.auth_manager is None:
+                        success = await self._initialize_account(account_id)
+                        if not success:
+                            account.failures += 1
+                            self._dirty = True
+                            continue
+
+                    # Check TTL and refresh if needed
+                    if account.models_cached_at > 0:
+                        age = time.time() - account.models_cached_at
+                        if age > ACCOUNT_CACHE_TTL:
+                            try:
+                                await self._refresh_account_models(account_id)
+                            except Exception as e:
+                                logger.warning(f"Failed to refresh models for {account_id}: {e}")
+
+                    # No model validation - let Kiro API decide (gateway, not gatekeeper)
+                    # Account is suitable!
+                    if allow_quota_exhausted and self._is_quota_exhausted(account):
+                        logger.warning(f"All accounts quota-exhausted, falling back to {account_id}")
+                    return account
+
             # All accounts unavailable
             return None
     
@@ -890,6 +903,8 @@ class AccountManager:
             # Update stats
             account.stats.total_requests += 1
             account.stats.successful_requests += 1
+            if account.current_usage is not None:
+                account.current_usage += 1
             self._dirty = True
             
             # Dynamic learning: add model to mapping if successful
