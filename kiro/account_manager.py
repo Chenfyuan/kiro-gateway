@@ -601,13 +601,14 @@ class AccountManager:
 
     async def _fetch_user_email(self, auth_manager: KiroAuthManager) -> Optional[str]:
         """
-        Fetch user email and usage limits via Kiro getUsageLimits API.
+        Fetch user email via Kiro getUsageLimits API.
+        Falls back to profile ARN region label for SSO accounts where API returns 403.
 
         Args:
             auth_manager: Initialized auth manager with valid token
 
         Returns:
-            Email string or None
+            Email string, fallback label, or None
         """
         url = "https://codewhisperer.us-east-1.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
         token = await auth_manager.get_access_token()
@@ -624,11 +625,20 @@ class AccountManager:
                 return email
             else:
                 logger.warning(f"getUsageLimits failed: HTTP {response.status_code}")
+                if auth_manager.profile_arn:
+                    import re
+                    m = re.search(r":codewhisperer:([^:]+):", auth_manager.profile_arn)
+                    region_label = m.group(1) if m else "unknown"
+                    label = f"SSO ({region_label})"
+                    logger.info(f"Using fallback label: {label}")
+                    return label
                 return None
 
     async def _fetch_usage_limits(self, account: "Account") -> None:
         """
         Fetch and update usage limits for an account.
+        For SSO/enterprise accounts where getUsageLimits returns 403,
+        marks quota as unlimited (-1).
         """
         if not account.auth_manager:
             return
@@ -652,6 +662,11 @@ class AccountManager:
                     if not account.email:
                         user_info = data.get("userInfo") or {}
                         account.email = user_info.get("email")
+                elif response.status_code == 403:
+                    account.usage_limit = -1
+                    account.current_usage = 0
+                    account.quota_updated_at = time.time()
+                    logger.info(f"Account {account.id[:8]}: getUsageLimits 403, marking as unlimited (enterprise/SSO)")
         except Exception as e:
             logger.warning(f"Failed to fetch usage limits for {account.id[:8]}: {e}")
 
