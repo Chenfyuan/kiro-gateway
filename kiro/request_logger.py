@@ -125,10 +125,13 @@ class RequestLogger:
             f"SELECT COUNT(*) FROM request_logs WHERE {where}", params
         ).fetchone()[0]
 
-        # Fetch page
+        # Fetch page (exclude large body fields for list view)
         offset = (page - 1) * page_size
         rows = self._conn.execute(
-            f"""SELECT * FROM request_logs WHERE {where}
+            f"""SELECT id, timestamp, model, api_type, streaming, status, status_code,
+                       duration_ms, prompt_tokens, completion_tokens, account_id,
+                       error_message, request_id
+                FROM request_logs WHERE {where}
                 ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
             params + [page_size, offset],
         ).fetchall()
