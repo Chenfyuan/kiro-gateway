@@ -279,6 +279,18 @@ async def get_logs_stats(request: Request, days: int = 7, authorization: str = H
     return await req_logger.get_stats(days)
 
 
+@router.get("/logs/{log_id}")
+async def get_log_detail(request: Request, log_id: int, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    req_logger = getattr(request.app.state, "request_logger", None)
+    if not req_logger:
+        raise HTTPException(status_code=503, detail="Request logger not initialized")
+    entry = await req_logger.get_by_id(log_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Log entry not found")
+    return entry
+
+
 @router.get("/dispatch-status")
 async def dispatch_status(request: Request, authorization: str = Header(None)):
     """Get current dispatch/scheduling status for visualization."""

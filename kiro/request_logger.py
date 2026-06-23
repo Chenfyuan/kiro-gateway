@@ -143,6 +143,15 @@ class RequestLogger:
             "data": [dict(row) for row in rows],
         }
 
+    async def get_by_id(self, log_id: int) -> Optional[dict]:
+        """Get a single log entry by ID (includes full body)."""
+        row = self._conn.execute(
+            "SELECT * FROM request_logs WHERE id = ?", (log_id,)
+        ).fetchone()
+        if row:
+            return dict(row)
+        return None
+
     async def get_stats(self, days: int = 7) -> dict:
         """Get summary stats for recent requests."""
         since = (datetime.utcnow() - timedelta(days=days)).isoformat()
