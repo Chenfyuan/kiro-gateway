@@ -78,6 +78,7 @@ from kiro.config import (
     ACCOUNT_SYSTEM,
     ACCOUNTS_CONFIG_FILE,
     ACCOUNTS_STATE_FILE,
+    ACCOUNT_LOAD_BALANCE_MODE,
     _warn_timeout_configuration,
 )
 from kiro.auth import KiroAuthManager
@@ -465,6 +466,7 @@ async def lifespan(app: FastAPI):
     
     # Store account_system flag
     app.state.account_system = ACCOUNT_SYSTEM
+    logger.info(f"Load balancing mode: {ACCOUNT_LOAD_BALANCE_MODE}")
     
     # ==============================================================================
     # Initialize first working account (blocking)

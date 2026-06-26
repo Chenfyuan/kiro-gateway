@@ -57,6 +57,7 @@ from kiro.config import (
     ACCOUNT_PROBABILISTIC_RETRY_CHANCE,
     ACCOUNT_CACHE_TTL,
     ACCOUNT_QUOTA_THRESHOLD,
+    ACCOUNT_LOAD_BALANCE_MODE,
     STATE_SAVE_INTERVAL_SECONDS,
     FALLBACK_MODELS,
 )
@@ -918,13 +919,21 @@ class AccountManager:
                 logger.debug(f"Dynamic learning: model '{normalized_model}' works on account {account_id}")
                 self._dirty = True
             
-            # GLOBAL STICKY: Update global current_account_index
+            # Update global current_account_index based on load balancing mode
             all_account_ids = list(self._accounts.keys())
             try:
                 successful_index = all_account_ids.index(account_id)
-                if self._current_account_index != successful_index:
-                    self._current_account_index = successful_index
-                    self._dirty = True
+                if ACCOUNT_LOAD_BALANCE_MODE == "round_robin":
+                    # Advance to next account after each success
+                    next_index = (successful_index + 1) % len(all_account_ids)
+                    if self._current_account_index != next_index:
+                        self._current_account_index = next_index
+                        self._dirty = True
+                else:
+                    # Sticky: lock to the successful account
+                    if self._current_account_index != successful_index:
+                        self._current_account_index = successful_index
+                        self._dirty = True
             except ValueError:
                 pass
     

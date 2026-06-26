@@ -592,6 +592,11 @@ ACCOUNT_CACHE_TTL: int = int(os.getenv("ACCOUNT_CACHE_TTL", "43200"))
 # Other accounts with available quota will be preferred
 ACCOUNT_QUOTA_THRESHOLD: float = float(os.getenv("ACCOUNT_QUOTA_THRESHOLD", "0.9"))
 
+# Load balancing mode for multi-account scheduling
+# - "sticky": prefer the last successful account (default, minimizes token refresh overhead)
+# - "round_robin": rotate to the next account after each successful request
+ACCOUNT_LOAD_BALANCE_MODE: str = os.getenv("ACCOUNT_LOAD_BALANCE_MODE", "sticky").lower()
+
 # ==================================================================================================
 # State Persistence Settings
 # ==================================================================================================
