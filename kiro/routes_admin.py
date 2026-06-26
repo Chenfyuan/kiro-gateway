@@ -314,24 +314,29 @@ async def sso_complete(request: Request, body: SSOCompleteRequest, authorization
     region = session["region"]
 
     async with httpx.AsyncClient(timeout=30) as client:
+        payload = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": _SSO_REDIRECT_URI,
+            "client_id": session["client_id"],
+            "code_verifier": session["code_verifier"],
+        }
+        if session.get("client_secret"):
+            payload["client_secret"] = session["client_secret"]
+
         resp = await client.post(
             f"https://oidc.{region}.amazonaws.com/token",
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": _SSO_REDIRECT_URI,
-                "client_id": session["client_id"],
-                "code_verifier": session["code_verifier"],
-            },
+            data=payload,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
     if resp.status_code != 200:
         try:
             err = resp.json()
-            detail = err.get("error_description") or err.get("error") or resp.text
+            detail = err.get("error_description") or err.get("message") or err.get("error") or resp.text
         except Exception:
             detail = resp.text
+        logger.error(f"Token exchange failed: {resp.status_code} {resp.text}")
         raise HTTPException(status_code=400, detail=f"Token exchange failed: {detail}")
 
     token = resp.json()
