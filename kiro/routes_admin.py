@@ -253,7 +253,7 @@ async def sso_start(request: Request, body: SSOInitRequest, authorization: str =
                 "scopes": _SSO_SCOPES,
                 "grantTypes": ["authorization_code", "refresh_token"],
                 "redirectUris": [_SSO_REDIRECT_URI],
-                "initiateLoginUri": body.start_url,
+                "issuerUrl": body.start_url,
             },
         )
         if resp.status_code != 200:
