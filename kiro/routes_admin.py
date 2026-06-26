@@ -188,6 +188,61 @@ async def set_sticky_account(request: Request, account_id: str, authorization: s
     return {"status": "ok", "sticky_account_id": account_id}
 
 
+class TestCallRequest(BaseModel):
+    model: str = Field(default="claude-sonnet-4-5", description="Model name to test")
+    prompt: str = Field(default="Hello! Respond in one sentence.", description="Prompt to send")
+    max_tokens: int = Field(default=256, description="Max tokens for response")
+
+
+@router.post("/test-call")
+async def test_model_call(request: Request, body: TestCallRequest, authorization: str = Header(None)):
+    """Make a test model call through the load balancer."""
+    _verify_admin_auth(authorization)
+
+    import time
+    start = time.time()
+
+    api_key = get_proxy_api_key()
+    payload = {
+        "model": body.model,
+        "max_tokens": body.max_tokens,
+        "messages": [{"role": "user", "content": body.prompt}],
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "http://127.0.0.1:8000/v1/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        )
+
+    elapsed = round((time.time() - start) * 1000)
+    if resp.status_code != 200:
+        try:
+            err = resp.json()
+            detail = err.get("error", {}).get("message") or resp.text
+        except Exception:
+            detail = resp.text
+        raise HTTPException(status_code=resp.status_code, detail=f"Model call failed: {detail}")
+
+    data = resp.json()
+    content = ""
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError):
+        content = str(data)
+
+    account_id = data.get("x_account_id") or resp.headers.get("x-account-id") or "unknown"
+
+    return {
+        "response": content,
+        "model": data.get("model", body.model),
+        "account_id": account_id,
+        "response_time_ms": elapsed,
+        "usage": data.get("usage"),
+    }
+
+
 @router.post("/accounts/{account_id:path}/test-connection")
 async def test_account_connection(request: Request, account_id: str, authorization: str = Header(None)):
     """Test if an account's credentials are still valid by calling getUsageLimits."""
