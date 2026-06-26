@@ -97,6 +97,20 @@ async def refresh_quotas(request: Request, authorization: str = Header(None)):
     return {"status": "ok"}
 
 
+@router.post("/accounts/{account_id:path}/refresh-quota")
+async def refresh_account_quota(request: Request, account_id: str, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+    account = account_manager._accounts.get(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+    if not account.auth_manager:
+        raise HTTPException(status_code=400, detail="Account not initialized")
+    await account_manager._fetch_usage_limits(account)
+    await account_manager._save_state()
+    return {"status": "ok", "account": account_manager.get_account_info(account_id)}
+
+
 @router.get("/accounts/{account_id:path}")
 async def get_account(request: Request, account_id: str, authorization: str = Header(None)):
     _verify_admin_auth(authorization)
