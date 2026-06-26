@@ -263,8 +263,6 @@ async def sso_start(request: Request, body: SSOInitRequest, authorization: str =
     client_id = reg["clientId"]
     client_secret = reg.get("clientSecret", "")
 
-    verifier = _pkce_verifier()
-    challenge = _pkce_challenge(verifier)
     state = secrets.token_urlsafe(16)
 
     params = {
@@ -272,8 +270,6 @@ async def sso_start(request: Request, body: SSOInitRequest, authorization: str =
         "response_type": "code",
         "scopes": ",".join(_SSO_SCOPES),
         "redirect_uri": _SSO_REDIRECT_URI,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
         "state": state,
     }
     auth_url = f"https://oidc.{region}.amazonaws.com/authorize?" + urlencode(params)
@@ -282,7 +278,6 @@ async def sso_start(request: Request, body: SSOInitRequest, authorization: str =
     _sso_sessions[session_id] = {
         "client_id": client_id,
         "client_secret": client_secret,
-        "code_verifier": verifier,
         "state": state,
         "region": region,
         "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
@@ -319,10 +314,8 @@ async def sso_complete(request: Request, body: SSOCompleteRequest, authorization
             "code": code,
             "redirect_uri": _SSO_REDIRECT_URI,
             "client_id": session["client_id"],
-            "code_verifier": session["code_verifier"],
+            "client_secret": session["client_secret"],
         }
-        if session.get("client_secret"):
-            payload["client_secret"] = session["client_secret"]
 
         resp = await client.post(
             f"https://oidc.{region}.amazonaws.com/token",
