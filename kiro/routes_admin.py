@@ -253,12 +253,14 @@ async def test_account_connection(request: Request, account_id: str, authorizati
     if not account:
         raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
 
-    if not account.auth_manager:
-        return {"status": "error", "message": "Account not initialized", "connected": False}
-
     import time
     import httpx
     from kiro.utils import get_kiro_headers
+
+    if not account.auth_manager:
+        success = await account_manager._initialize_account(account_id)
+        if not success or not account.auth_manager:
+            return {"status": "error", "message": "Account initialization failed", "connected": False}
 
     start_time = time.time()
     try:
