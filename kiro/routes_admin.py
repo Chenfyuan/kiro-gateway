@@ -9,9 +9,11 @@ Authentication uses the same PROXY_API_KEY as the main API.
 
 import json
 import uuid
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, Header
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -19,6 +21,9 @@ from pydantic import BaseModel, Field
 from kiro.config import get_proxy_api_key, set_proxy_api_key
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+# In-memory SSO session store: session_id -> session dict
+_sso_sessions: dict = {}
 
 
 def _verify_admin_auth(authorization: Optional[str]) -> None:
@@ -37,6 +42,11 @@ class AddAccountRequest(BaseModel):
 
 class UpdateAccountRequest(BaseModel):
     disabled: Optional[bool] = Field(default=None, description="Set to true to disable, false to enable")
+
+
+class SSOInitRequest(BaseModel):
+    start_url: str = Field(description="IAM Identity Center start URL, e.g. https://xxx.awsapps.com/start")
+    region: str = Field(default="us-east-1", description="AWS region of IAM Identity Center")
 
 
 @router.get("/accounts")
@@ -196,6 +206,121 @@ async def remove_account(request: Request, account_id: str, authorization: str =
         raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
     return {"status": "ok", "removed": account_id}
 
+
+
+@router.post("/accounts/sso/init")
+async def sso_init(request: Request, body: SSOInitRequest, authorization: str = Header(None)):
+    """Initiate IAM Identity Center Device Authorization Grant flow."""
+    _verify_admin_auth(authorization)
+
+    region = body.region
+    start_url = body.start_url
+
+    # Step 1: Register OIDC client
+    register_url = f"https://oidc.{region}.amazonaws.com/client/register"
+    register_payload = {
+        "clientName": "kiro-gateway",
+        "clientType": "public",
+        "scopes": ["sso:account:access"],
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(register_url, json=register_payload)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"RegisterClient failed: {resp.text}")
+        reg = resp.json()
+
+    client_id = reg["clientId"]
+    client_secret = reg["clientSecret"]
+
+    # Step 2: Start device authorization
+    device_auth_url = f"https://oidc.{region}.amazonaws.com/device_authorization"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(device_auth_url, json={
+            "clientId": client_id,
+            "clientSecret": client_secret,
+            "startUrl": start_url,
+        })
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"StartDeviceAuthorization failed: {resp.text}")
+        dev = resp.json()
+
+    session_id = uuid.uuid4().hex
+    expires_in = dev.get("expiresIn", 600)
+    _sso_sessions[session_id] = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "device_code": dev["deviceCode"],
+        "region": region,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat(),
+        "interval": dev.get("interval", 5),
+    }
+
+    logger.info(f"SSO init: session={session_id}, region={region}")
+    return {
+        "session_id": session_id,
+        "user_code": dev["userCode"],
+        "verification_uri": dev["verificationUri"],
+        "verification_uri_complete": dev.get("verificationUriComplete", dev["verificationUri"]),
+        "expires_in": expires_in,
+        "interval": dev.get("interval", 5),
+    }
+
+
+@router.get("/accounts/sso/poll/{session_id}")
+async def sso_poll(request: Request, session_id: str, authorization: str = Header(None)):
+    """Poll for IAM Identity Center authorization completion."""
+    _verify_admin_auth(authorization)
+
+    session = _sso_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="SSO session not found or expired")
+
+    if datetime.now(timezone.utc) >= datetime.fromisoformat(session["expires_at"]):
+        del _sso_sessions[session_id]
+        raise HTTPException(status_code=410, detail="SSO session expired")
+
+    region = session["region"]
+    token_url = f"https://oidc.{region}.amazonaws.com/token"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(token_url, json={
+            "clientId": session["client_id"],
+            "clientSecret": session["client_secret"],
+            "grantType": "urn:ietf:params:oauth:grant-type:device_code",
+            "deviceCode": session["device_code"],
+        })
+
+    if resp.status_code == 200:
+        token = resp.json()
+        credentials = {
+            "accessToken": token.get("accessToken"),
+            "refreshToken": token.get("refreshToken"),
+            "clientId": session["client_id"],
+            "clientSecret": session["client_secret"],
+            "region": region,
+        }
+        del _sso_sessions[session_id]
+
+        account_manager = request.app.state.account_manager
+        try:
+            account_id = await account_manager.add_account(credentials)
+            info = account_manager.get_account_info(account_id)
+            logger.info(f"SSO completed: account={account_id}")
+            return {"status": "completed", "account_id": account_id, "account": info}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to create account: {e}")
+
+    if resp.status_code == 400:
+        error = resp.json().get("error", "unknown")
+        if error in ("authorization_pending", "slow_down"):
+            return {"status": "pending"}
+        if error == "expired_token":
+            del _sso_sessions[session_id]
+            raise HTTPException(status_code=410, detail="Device code expired")
+        if error == "access_denied":
+            del _sso_sessions[session_id]
+            raise HTTPException(status_code=403, detail="User denied authorization")
+
+    raise HTTPException(status_code=502, detail=f"Token endpoint error: {resp.status_code} {resp.text}")
 
 
 def _parse_kiro_export(data: dict) -> dict:
