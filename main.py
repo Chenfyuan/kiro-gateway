@@ -472,8 +472,7 @@ async def lifespan(app: FastAPI):
     all_accounts = list(app.state.account_manager._accounts.keys())
     
     if not all_accounts:
-        logger.error("No accounts configured in credentials.json")
-        raise RuntimeError("No accounts configured in credentials.json")
+        logger.warning("No accounts configured yet. Add accounts via API to start serving requests.")
     
     # Determine start index from state.json
     start_index = app.state.account_manager._current_account_index
@@ -497,8 +496,7 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Failed to initialize account: {account_id}")
     
     if not initialized:
-        logger.error("Failed to initialize any account. Check your credentials.")
-        raise RuntimeError("Failed to initialize any account")
+        logger.warning("Failed to initialize any account. Add valid accounts via API to start serving requests.")
     
     # Save initial state
     await app.state.account_manager._save_state()
