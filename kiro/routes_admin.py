@@ -314,18 +314,15 @@ async def sso_complete(request: Request, body: SSOCompleteRequest, authorization
     region = session["region"]
 
     async with httpx.AsyncClient(timeout=30) as client:
-        payload = {
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": _SSO_REDIRECT_URI,
-            "client_id": session["client_id"],
-            "code_verifier": session["code_verifier"],
-        }
-
         resp = await client.post(
             f"https://oidc.{region}.amazonaws.com/token",
-            data=payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            json={
+                "grantType": "authorization_code",
+                "code": code,
+                "redirectUri": _SSO_REDIRECT_URI,
+                "clientId": session["client_id"],
+                "codeVerifier": session["code_verifier"],
+            },
         )
 
     if resp.status_code != 200:
