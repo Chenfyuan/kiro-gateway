@@ -218,6 +218,7 @@ class AccountManager:
         self._dirty = False
         self._credentials_config: List[Dict] = []
         self._current_account_index: int = 0  # GLOBAL sticky index for all models
+        self._load_balance_mode: str = ACCOUNT_LOAD_BALANCE_MODE
     
     async def load_credentials(self) -> None:
         """
@@ -350,6 +351,8 @@ class AccountManager:
                 state_data = json.load(f)
             # Restore global current_account_index
             self._current_account_index = state_data.get("current_account_index", 0)
+            if "load_balance_mode" in state_data:
+                self._load_balance_mode = state_data["load_balance_mode"]
             
             # Restore model_to_accounts mapping (without next_index)
             for model, data in state_data.get("model_to_accounts", {}).items():
@@ -390,6 +393,7 @@ class AccountManager:
         """
         state_data = {
             "current_account_index": self._current_account_index,
+            "load_balance_mode": self._load_balance_mode,
             "accounts": {
                 account_id: {
                     "failures": account.failures,
@@ -923,7 +927,7 @@ class AccountManager:
             all_account_ids = list(self._accounts.keys())
             try:
                 successful_index = all_account_ids.index(account_id)
-                if ACCOUNT_LOAD_BALANCE_MODE == "round_robin":
+                if self._load_balance_mode == "round_robin":
                     # Advance to next account after each success
                     next_index = (successful_index + 1) % len(all_account_ids)
                     if self._current_account_index != next_index:

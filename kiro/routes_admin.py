@@ -188,6 +188,32 @@ async def set_sticky_account(request: Request, account_id: str, authorization: s
     return {"status": "ok", "sticky_account_id": account_id}
 
 
+class DispatchConfigRequest(BaseModel):
+    load_balance_mode: str = Field(description="'round_robin' or 'sticky'")
+
+
+@router.get("/dispatch-config")
+async def get_dispatch_config(request: Request, authorization: str = Header(None)):
+    """Get current dispatch configuration."""
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+    return {"load_balance_mode": account_manager._load_balance_mode}
+
+
+@router.post("/dispatch-config")
+async def set_dispatch_config(request: Request, body: DispatchConfigRequest, authorization: str = Header(None)):
+    """Update dispatch configuration."""
+    _verify_admin_auth(authorization)
+    allowed = {"round_robin", "sticky"}
+    if body.load_balance_mode not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid mode. Allowed: {allowed}")
+    account_manager = request.app.state.account_manager
+    account_manager._load_balance_mode = body.load_balance_mode
+    account_manager._dirty = True
+    logger.info(f"Load balance mode changed to: {body.load_balance_mode}")
+    return {"load_balance_mode": account_manager._load_balance_mode}
+
+
 class TestCallRequest(BaseModel):
     model: str = Field(default="claude-sonnet-4-5", description="Model name to test")
     prompt: str = Field(default="Hello! Respond in one sentence.", description="Prompt to send")
