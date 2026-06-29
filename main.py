@@ -507,7 +507,12 @@ async def lifespan(app: FastAPI):
     save_task = asyncio.create_task(
         app.state.account_manager.save_state_periodically()
     )
-    
+
+    # Start background task for periodic health check (every 30 min by default)
+    health_check_task = asyncio.create_task(
+        app.state.account_manager.health_check_periodically()
+    )
+
     logger.info("Account system initialized successfully")
 
     # Initialize usage tracker
@@ -531,12 +536,13 @@ async def lifespan(app: FastAPI):
     # Close request logger
     await app.state.request_logger.close()
 
-    # Cancel background task
-    save_task.cancel()
-    try:
-        await save_task
-    except asyncio.CancelledError:
-        pass
+    # Cancel background tasks
+    for task in (save_task, health_check_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     
     # Final state save
     await app.state.account_manager._save_state()

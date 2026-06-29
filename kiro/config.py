@@ -604,6 +604,9 @@ ACCOUNT_LOAD_BALANCE_MODE: str = os.getenv("ACCOUNT_LOAD_BALANCE_MODE", "sticky"
 # Interval for periodic state.json saving in seconds
 STATE_SAVE_INTERVAL_SECONDS: int = int(os.getenv("STATE_SAVE_INTERVAL_SECONDS", "10"))
 
+# Interval for periodic account health check in seconds (default 30 minutes)
+HEALTH_CHECK_INTERVAL_SECONDS: int = int(os.getenv("HEALTH_CHECK_INTERVAL_SECONDS", "1800"))
+
 # ==================================================================================================
 # Application Version
 # ==================================================================================================

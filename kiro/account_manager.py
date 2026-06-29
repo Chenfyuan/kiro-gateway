@@ -59,6 +59,7 @@ from kiro.config import (
     ACCOUNT_QUOTA_THRESHOLD,
     ACCOUNT_LOAD_BALANCE_MODE,
     STATE_SAVE_INTERVAL_SECONDS,
+    HEALTH_CHECK_INTERVAL_SECONDS,
     FALLBACK_MODELS,
 )
 from kiro.utils import get_kiro_headers
@@ -168,6 +169,8 @@ class Account:
     usage_limit: Optional[float] = None
     quota_updated_at: float = 0.0
     stats: AccountStats = field(default_factory=AccountStats)
+    last_health_check_at: float = 0.0
+    last_health_status: Optional[str] = None  # "ok" | "failed" | None
 
 
 @dataclass
@@ -450,6 +453,38 @@ class AccountManager:
                     await self._save_state()
                     self._dirty = False
     
+    async def health_check_all(self) -> None:
+        """Run connectivity health check on all initialized, non-disabled accounts."""
+        import time
+        import httpx
+        for account_id, account in list(self._accounts.items()):
+            if account.disabled or not account.auth_manager:
+                continue
+            try:
+                url = (
+                    f"https://q.{account.auth_manager.api_region}.amazonaws.com"
+                    "/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+                )
+                token = await account.auth_manager.get_access_token()
+                headers = get_kiro_headers(account.auth_manager, token)
+                async with httpx.AsyncClient(timeout=10) as client:
+                    response = await client.get(url, headers=headers)
+                account.last_health_check_at = time.time()
+                account.last_health_status = "ok" if response.status_code == 200 else "failed"
+            except Exception as e:
+                import time as _t
+                account.last_health_check_at = _t.time()
+                account.last_health_status = "failed"
+                logger.warning(f"Health check failed for {account_id}: {e}")
+        self._dirty = True
+
+    async def health_check_periodically(self) -> None:
+        """Background task: run health_check_all every HEALTH_CHECK_INTERVAL_SECONDS."""
+        while True:
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
+            logger.info("Running periodic health check on all accounts...")
+            await self.health_check_all()
+
     async def _initialize_account(self, account_id: str) -> bool:
         """
         Initialize account (lazy initialization).
@@ -1067,6 +1102,10 @@ class AccountManager:
         if account.disabled:
             status = "disabled"
 
+        token_expires_at = None
+        if account.auth_manager and account.auth_manager._expires_at:
+            token_expires_at = account.auth_manager._expires_at.isoformat()
+
         return {
             "id": account.id,
             "email": account.email,
@@ -1087,6 +1126,9 @@ class AccountManager:
             "current_usage": account.current_usage,
             "usage_limit": account.usage_limit,
             "quota_updated_at": account.quota_updated_at,
+            "token_expires_at": token_expires_at,
+            "last_health_check_at": account.last_health_check_at or None,
+            "last_health_status": account.last_health_status,
         }
 
     async def add_account(self, credentials: dict) -> str:
