@@ -228,6 +228,63 @@ async def set_dispatch_config(request: Request, body: DispatchConfigRequest, aut
     return {"load_balance_mode": account_manager._load_balance_mode}
 
 
+class CircuitConfigRequest(BaseModel):
+    recovery_timeout: int = Field(description="Base recovery timeout in seconds (e.g. 60)")
+    max_backoff_multiplier: float = Field(description="Max backoff multiplier (e.g. 1440 = 24h cap)")
+    probabilistic_retry_chance: float = Field(description="Probabilistic retry chance 0.0-1.0")
+    quota_threshold: float = Field(description="Quota exhaustion threshold 0.0-1.0")
+
+
+@router.get("/circuit-config")
+async def get_circuit_config(request: Request, authorization: str = Header(None)):
+    """Get current circuit breaker configuration."""
+    _verify_admin_auth(authorization)
+    am = request.app.state.account_manager
+    return {
+        "recovery_timeout": am._recovery_timeout,
+        "max_backoff_multiplier": am._max_backoff_multiplier,
+        "probabilistic_retry_chance": am._probabilistic_retry_chance,
+        "quota_threshold": am._quota_threshold,
+    }
+
+
+@router.post("/circuit-config")
+async def set_circuit_config(request: Request, body: CircuitConfigRequest, authorization: str = Header(None)):
+    """Update circuit breaker configuration at runtime."""
+    _verify_admin_auth(authorization)
+    if not (0 <= body.probabilistic_retry_chance <= 1):
+        raise HTTPException(status_code=400, detail="probabilistic_retry_chance must be 0.0-1.0")
+    if not (0 < body.quota_threshold <= 1):
+        raise HTTPException(status_code=400, detail="quota_threshold must be 0.0-1.0")
+    if body.recovery_timeout <= 0:
+        raise HTTPException(status_code=400, detail="recovery_timeout must be > 0")
+    am = request.app.state.account_manager
+    am._recovery_timeout = body.recovery_timeout
+    am._max_backoff_multiplier = body.max_backoff_multiplier
+    am._probabilistic_retry_chance = body.probabilistic_retry_chance
+    am._quota_threshold = body.quota_threshold
+    am._dirty = True
+    logger.info(f"Circuit breaker config updated: {body.dict()}")
+    return body.dict()
+
+
+class NicknameRequest(BaseModel):
+    nickname: Optional[str] = Field(default=None, description="Custom nickname, null to clear")
+
+
+@router.put("/accounts/{account_id:path}/nickname")
+async def set_account_nickname(request: Request, account_id: str, body: NicknameRequest, authorization: str = Header(None)):
+    """Set or clear a custom nickname for an account."""
+    _verify_admin_auth(authorization)
+    am = request.app.state.account_manager
+    account = am._accounts.get(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+    account.nickname = body.nickname or None
+    am._dirty = True
+    return {"id": account_id, "nickname": account.nickname}
+
+
 class TestCallRequest(BaseModel):
     model: str = Field(default="claude-sonnet-4-5", description="Model name to test")
     prompt: str = Field(default="Hello! Respond in one sentence.", description="Prompt to send")

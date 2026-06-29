@@ -171,6 +171,7 @@ class Account:
     stats: AccountStats = field(default_factory=AccountStats)
     last_health_check_at: float = 0.0
     last_health_status: Optional[str] = None  # "ok" | "failed" | None
+    nickname: Optional[str] = None
 
 
 @dataclass
@@ -222,6 +223,11 @@ class AccountManager:
         self._credentials_config: List[Dict] = []
         self._current_account_index: int = 0  # GLOBAL sticky index for all models
         self._load_balance_mode: str = ACCOUNT_LOAD_BALANCE_MODE
+        # Circuit breaker params (runtime-configurable)
+        self._recovery_timeout: int = ACCOUNT_RECOVERY_TIMEOUT
+        self._max_backoff_multiplier: float = ACCOUNT_MAX_BACKOFF_MULTIPLIER
+        self._probabilistic_retry_chance: float = ACCOUNT_PROBABILISTIC_RETRY_CHANCE
+        self._quota_threshold: float = ACCOUNT_QUOTA_THRESHOLD
     
     async def load_credentials(self) -> None:
         """
@@ -356,6 +362,15 @@ class AccountManager:
             self._current_account_index = state_data.get("current_account_index", 0)
             if "load_balance_mode" in state_data:
                 self._load_balance_mode = state_data["load_balance_mode"]
+            # Restore circuit breaker params
+            if "recovery_timeout" in state_data:
+                self._recovery_timeout = state_data["recovery_timeout"]
+            if "max_backoff_multiplier" in state_data:
+                self._max_backoff_multiplier = state_data["max_backoff_multiplier"]
+            if "probabilistic_retry_chance" in state_data:
+                self._probabilistic_retry_chance = state_data["probabilistic_retry_chance"]
+            if "quota_threshold" in state_data:
+                self._quota_threshold = state_data["quota_threshold"]
             
             # Restore model_to_accounts mapping (without next_index)
             for model, data in state_data.get("model_to_accounts", {}).items():
@@ -375,7 +390,10 @@ class AccountManager:
                     account.current_usage = data.get("current_usage")
                     account.usage_limit = data.get("usage_limit")
                     account.quota_updated_at = data.get("quota_updated_at", 0.0)
-                    
+                    account.last_health_check_at = data.get("last_health_check_at", 0.0)
+                    account.last_health_status = data.get("last_health_status")
+                    account.nickname = data.get("nickname")
+
                     stats_data = data.get("stats", {})
                     account.stats = AccountStats(
                         total_requests=stats_data.get("total_requests", 0),
@@ -397,6 +415,10 @@ class AccountManager:
         state_data = {
             "current_account_index": self._current_account_index,
             "load_balance_mode": self._load_balance_mode,
+            "recovery_timeout": self._recovery_timeout,
+            "max_backoff_multiplier": self._max_backoff_multiplier,
+            "probabilistic_retry_chance": self._probabilistic_retry_chance,
+            "quota_threshold": self._quota_threshold,
             "accounts": {
                 account_id: {
                     "failures": account.failures,
@@ -407,6 +429,9 @@ class AccountManager:
                     "current_usage": account.current_usage,
                     "usage_limit": account.usage_limit,
                     "quota_updated_at": account.quota_updated_at,
+                    "last_health_check_at": account.last_health_check_at,
+                    "last_health_status": account.last_health_status,
+                    "nickname": account.nickname,
                     "stats": {
                         "total_requests": account.stats.total_requests,
                         "successful_requests": account.stats.successful_requests,
@@ -786,7 +811,7 @@ class AccountManager:
         """Check if account's quota usage exceeds threshold."""
         if account.usage_limit is None or account.usage_limit <= 0:
             return False
-        return (account.current_usage or 0) / account.usage_limit >= ACCOUNT_QUOTA_THRESHOLD
+        return (account.current_usage or 0) / account.usage_limit >= self._quota_threshold
 
     async def get_next_account(self, model: str, exclude_accounts: Optional[set] = None) -> Optional[Account]:
         """
@@ -878,12 +903,12 @@ class AccountManager:
 
                         # Exponential backoff: base * 2^(failures - 1), capped at MAX_MULTIPLIER
                         # 1 failure: 60s, 2: 120s, 3: 240s, ..., 12+: 86400s (1 day cap)
-                        backoff_multiplier = min(2 ** (account.failures - 1), ACCOUNT_MAX_BACKOFF_MULTIPLIER)
-                        effective_timeout = ACCOUNT_RECOVERY_TIMEOUT * backoff_multiplier
+                        backoff_multiplier = min(2 ** (account.failures - 1), self._max_backoff_multiplier)
+                        effective_timeout = self._recovery_timeout * backoff_multiplier
 
                         if time_since_failure < effective_timeout:
-                            # Probabilistic retry (10% chance)
-                            if random.random() > ACCOUNT_PROBABILISTIC_RETRY_CHANCE:
+                            # Probabilistic retry
+                            if random.random() > self._probabilistic_retry_chance:
                                 continue
                             else:
                                 logger.info(f"Probabilistic retry for broken account {account_id}")
@@ -1129,6 +1154,7 @@ class AccountManager:
             "token_expires_at": token_expires_at,
             "last_health_check_at": account.last_health_check_at or None,
             "last_health_status": account.last_health_status,
+            "nickname": account.nickname,
         }
 
     async def add_account(self, credentials: dict) -> str:
