@@ -1028,7 +1028,6 @@ class AccountManager:
             # Account is healthy, model is just not available on this account
             # Log for user visibility but don't penalize account statistics
             if reason == "INVALID_MODEL_ID":
-                account.stats.total_requests += 1
                 self._dirty = True
                 logger.warning(
                     f"Model '{model}' not available on account {account_id}: "
