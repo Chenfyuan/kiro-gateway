@@ -269,20 +269,21 @@ async def set_circuit_config(request: Request, body: CircuitConfigRequest, autho
 
 
 class NicknameRequest(BaseModel):
+    account_id: str = Field(description="Account ID")
     nickname: Optional[str] = Field(default=None, description="Custom nickname, null to clear")
 
 
-@router.put("/accounts/{account_id:path}/nickname")
-async def set_account_nickname(request: Request, account_id: str, body: NicknameRequest, authorization: str = Header(None)):
+@router.post("/accounts/set-nickname")
+async def set_account_nickname(request: Request, body: NicknameRequest, authorization: str = Header(None)):
     """Set or clear a custom nickname for an account."""
     _verify_admin_auth(authorization)
     am = request.app.state.account_manager
-    account = am._accounts.get(account_id)
+    account = am._accounts.get(body.account_id)
     if not account:
-        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+        raise HTTPException(status_code=404, detail=f"Account not found: {body.account_id}")
     account.nickname = body.nickname or None
     am._dirty = True
-    return {"id": account_id, "nickname": account.nickname}
+    return {"id": body.account_id, "nickname": account.nickname}
 
 
 class TestCallRequest(BaseModel):
