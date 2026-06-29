@@ -679,3 +679,20 @@ async def update_api_key(body: UpdateApiKeyRequest, authorization: str = Header(
     set_proxy_api_key(body.new_key)
     logger.info("API key updated successfully")
     return {"status": "ok", "message": "API key updated. Use the new key for subsequent requests."}
+
+
+@router.post("/accounts/health-check")
+async def trigger_health_check(request: Request, authorization: str = Header(None)):
+    """Manually trigger health check for all accounts."""
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+    await account_manager.health_check_all()
+    results = []
+    async with account_manager._lock:
+        for account_id, account in account_manager._accounts.items():
+            results.append({
+                "id": account_id,
+                "status": account.last_health_status,
+                "checked_at": account.last_health_check_at,
+            })
+    return {"checked": len(results), "results": results}
