@@ -286,19 +286,29 @@ class UsageStore(abc.ABC):
     @abc.abstractmethod
     async def request_history(
         self,
-        limit: int = 100,
-        offset: int = 0,
-        status: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
-        """Recent request logs, newest first, optionally filtered by status."""
+        page: int = 1,
+        page_size: int = 50,
+        model: str = "",
+        status: str = "",
+        days: int = 7,
+    ) -> dict[str, Any]:
+        """Paginated request logs with optional model/status filter over the
+        last ``days`` days. Signature mirrors ``RequestLogger.query`` so admin
+        routes can call through without changing their pagination code."""
 
     @abc.abstractmethod
-    async def request_by_id(self, request_id: str) -> Optional[dict[str, Any]]:
-        """Fetch one request log row by ``request_id``."""
+    async def request_by_id(self, log_id: int) -> Optional[dict[str, Any]]:
+        """Fetch one request log row by its primary-key ``id`` (int).
+
+        Note: this is the SQLite/Postgres auto-increment id, not the caller-
+        supplied ``request_id`` string — that's a separate indexed field.
+        Matches the current ``RequestLogger.get_by_id`` semantics.
+        """
 
     @abc.abstractmethod
-    async def request_stats(self, days: int = 30) -> dict[str, Any]:
-        """Aggregate: success/error counts, p50/p95 latency."""
+    async def request_stats(self, days: int = 7) -> dict[str, Any]:
+        """Aggregate: success/error counts, average latency, etc. Default
+        window is 7 days to match the pre-refactor behaviour."""
 
 
 # ---------------------------------------------------------------------------

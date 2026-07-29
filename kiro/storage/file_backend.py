@@ -170,57 +170,142 @@ class FileAccountRegistry(AccountRegistry):
 
 
 class FileUsageStore(UsageStore):
-    """SQLite-backed :class:`UsageStore` (the "file" backend groups all
-    on-disk state, including the SQLite DB).
+    """SQLite-backed :class:`UsageStore`.
 
-    Deferred to Phase 1.2b, same as the other file-backend classes above."""
+    Wraps the pre-existing ``UsageTracker`` and ``RequestLogger`` classes.
+    They own the SQLite connection, WAL pragmas, table DDL and the per-
+    process ``asyncio.Lock`` around writes; we do not re-implement any of
+    that here. Instead this store:
+
+    1. Provides a unified async API in the shape of the ``UsageStore`` ABC.
+    2. Exposes the two underlying instances via ``.tracker`` / ``.logger``
+       properties so ``main.py``'s FastAPI lifespan can hoist them onto
+       ``app.state`` — that keeps every downstream caller
+       (``routes_openai`` / ``routes_anthropic`` / ``routes_admin``) working
+       unchanged. Once Phase 1.2c re-routes those callers through the store
+       we can drop the ``app.state`` hoist entirely.
+
+    Both trackers use the SAME database file today
+    (``data/token_usage.db``). The Postgres backend will keep them logically
+    separate (two tables in one schema) but this file backend leaves the
+    layout alone so we don't have to migrate an existing prod SQLite file
+    just to satisfy the abstraction.
+    """
+
+    def __init__(self, db_path: str = "data/token_usage.db") -> None:
+        # Import inside __init__ to keep the storage package import cost low
+        # and to avoid a top-level dependency on the tracker modules (which
+        # in turn pull in loguru + model_pricing). Tests can substitute a
+        # different db_path without touching prod defaults.
+        from kiro.usage_tracker import UsageTracker
+        from kiro.request_logger import RequestLogger
+
+        self._tracker = UsageTracker(db_path=db_path)
+        self._logger = RequestLogger(db_path=db_path)
+        self._initialised = False
+
+    # ------------------------------------------------------------------
+    # Lifecycle hooks (called from main.py's FastAPI lifespan).
+    # ------------------------------------------------------------------
+
+    async def init(self) -> None:
+        """Open both SQLite connections and create tables. Idempotent."""
+        if self._initialised:
+            return
+        await self._tracker.init_db()
+        await self._logger.init_db()
+        self._initialised = True
+
+    async def close(self) -> None:
+        """Close both SQLite connections. Idempotent."""
+        await self._tracker.close()
+        await self._logger.close()
+        self._initialised = False
+
+    # ------------------------------------------------------------------
+    # Underlying-instance accessors for the app.state hoist. These will
+    # disappear once Phase 1.2c routes callers through the ABC methods
+    # below; keeping them for now avoids touching six hot-path files in a
+    # single commit.
+    # ------------------------------------------------------------------
+
+    @property
+    def tracker(self):
+        """The wrapped :class:`UsageTracker` — used by ``app.state`` for
+        backwards compatibility. Prefer :meth:`record_usage` in new code."""
+        return self._tracker
+
+    @property
+    def logger(self):
+        """The wrapped :class:`RequestLogger` — used by ``app.state`` for
+        backwards compatibility. Prefer :meth:`record_request` in new code."""
+        return self._logger
+
+    # ------------------------------------------------------------------
+    # UsageStore ABC — writes.
+    # ------------------------------------------------------------------
 
     async def record_usage(self, entry: UsageRecord) -> None:
-        raise NotImplementedError(
-            "FileUsageStore.record_usage is a Phase 1.2b task: delegate to "
-            "the existing UsageTracker.record."
+        await self._tracker.record(
+            model=entry.model,
+            prompt_tokens=entry.prompt_tokens,
+            completion_tokens=entry.completion_tokens,
+            account_id=entry.account_id or "",
+            api_type=entry.api_type,
+            request_id=entry.request_id or "",
         )
 
     async def record_request(self, entry: RequestLogEntry) -> None:
-        raise NotImplementedError(
-            "FileUsageStore.record_request is a Phase 1.2b task: delegate to "
-            "RequestLogger.record."
+        # RequestLogger.record has 12+ positional-ish kwargs today; we pass
+        # them by keyword to match the current signature. If that signature
+        # drifts, the ABC keeps the storage-layer contract stable.
+        await self._logger.record(
+            model=entry.model,
+            api_type=entry.api_type,
+            streaming=1 if entry.streaming else 0,
+            status=entry.status,
+            status_code=entry.status_code,
+            duration_ms=entry.duration_ms,
+            prompt_tokens=entry.prompt_tokens,
+            completion_tokens=entry.completion_tokens,
+            account_id=entry.account_id or "",
+            error_message=entry.error_message,
+            request_id=entry.request_id or "",
+            request_body=entry.request_body,
+            response_body=entry.response_body,
         )
+
+    # ------------------------------------------------------------------
+    # UsageStore ABC — reads. Straightforward passthroughs to the same
+    # methods the admin routes call today.
+    # ------------------------------------------------------------------
 
     async def usage_summary(self, days: int = 30) -> dict[str, Any]:
-        raise NotImplementedError(
-            "FileUsageStore.usage_summary is a Phase 1.2b task."
-        )
+        return await self._tracker.get_summary(days=days)
 
     async def usage_daily(self, days: int = 30) -> list[dict[str, Any]]:
-        raise NotImplementedError(
-            "FileUsageStore.usage_daily is a Phase 1.2b task."
-        )
+        return await self._tracker.get_daily_stats(days=days)
 
     async def usage_by_model(self, days: int = 30) -> list[dict[str, Any]]:
-        raise NotImplementedError(
-            "FileUsageStore.usage_by_model is a Phase 1.2b task."
-        )
+        return await self._tracker.get_model_stats(days=days)
 
     async def request_history(
         self,
-        limit: int = 100,
-        offset: int = 0,
-        status: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
-        raise NotImplementedError(
-            "FileUsageStore.request_history is a Phase 1.2b task."
+        page: int = 1,
+        page_size: int = 50,
+        model: str = "",
+        status: str = "",
+        days: int = 7,
+    ) -> dict[str, Any]:
+        return await self._logger.query(
+            page=page, page_size=page_size, model=model, status=status, days=days
         )
 
-    async def request_by_id(self, request_id: str) -> Optional[dict[str, Any]]:
-        raise NotImplementedError(
-            "FileUsageStore.request_by_id is a Phase 1.2b task."
-        )
+    async def request_by_id(self, log_id: int) -> Optional[dict[str, Any]]:
+        return await self._logger.get_by_id(log_id)
 
-    async def request_stats(self, days: int = 30) -> dict[str, Any]:
-        raise NotImplementedError(
-            "FileUsageStore.request_stats is a Phase 1.2b task."
-        )
+    async def request_stats(self, days: int = 7) -> dict[str, Any]:
+        return await self._logger.get_stats(days=days)
 
 
 # ---------------------------------------------------------------------------

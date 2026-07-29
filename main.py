@@ -515,26 +515,24 @@ async def lifespan(app: FastAPI):
 
     logger.info("Account system initialized successfully")
 
-    # Initialize usage tracker
-    from kiro.usage_tracker import UsageTracker
-    app.state.usage_tracker = UsageTracker(db_path="data/token_usage.db")
-    await app.state.usage_tracker.init_db()
-
-    # Initialize request logger
-    from kiro.request_logger import RequestLogger
-    app.state.request_logger = RequestLogger(db_path="data/token_usage.db")
-    await app.state.request_logger.init_db()
+    # Initialize storage layer (Phase 1.2b). Wraps the existing UsageTracker
+    # + RequestLogger for the file backend; the hoisted app.state attributes
+    # keep the current hot-path callers (routes_openai / routes_anthropic /
+    # routes_admin) working without any changes.
+    from kiro.storage import build_storage
+    storage = build_storage()
+    app.state.storage = storage
+    await storage.usage.init()
+    app.state.usage_tracker = storage.usage.tracker
+    app.state.request_logger = storage.usage.logger
 
     yield
 
     # Graceful shutdown
     logger.info("Shutting down application...")
 
-    # Close usage tracker
-    await app.state.usage_tracker.close()
-
-    # Close request logger
-    await app.state.request_logger.close()
+    # Close storage layer (usage + request loggers).
+    await app.state.storage.usage.close()
 
     # Cancel background tasks
     for task in (save_task, health_check_task):
