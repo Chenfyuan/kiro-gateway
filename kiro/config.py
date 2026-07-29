@@ -95,27 +95,69 @@ SERVER_PORT: int = int(os.getenv("SERVER_PORT", str(DEFAULT_SERVER_PORT)))
 # Proxy Server Settings
 # ==================================================================================================
 
-# API key for proxy access (clients must pass it in Authorization header)
-PROXY_API_KEY: str = os.getenv("PROXY_API_KEY", "my-super-secret-password-123")
+# API key for proxy access (clients must pass it in Authorization header).
+#
+# The value is owned by the storage layer (kiro.storage.AdminKeyStore) — the
+# file-backed impl reads ``data/api_key.txt`` with fallback to the env var,
+# preserving the pre-refactor precedence exactly. This module keeps two sync
+# facade functions (``get_proxy_api_key`` / ``set_proxy_api_key``) so the
+# many existing callers don't have to change.
+#
+# ``PROXY_API_KEY`` is retained as a module attribute for backwards
+# compatibility (any code that imported it directly still works). We keep it
+# in lockstep with the storage cache via ``_sync_module_global`` on every
+# read/write.
+_ADMIN_KEY_STORE = None  # lazily initialised — see _get_admin_key_store
 
-# Runtime API key management: persisted key file takes priority over env var
-_API_KEY_FILE = Path("data/api_key.txt")
-if _API_KEY_FILE.exists():
-    _stored_key = _API_KEY_FILE.read_text().strip()
-    if _stored_key:
-        PROXY_API_KEY = _stored_key
+
+def _get_admin_key_store():
+    """Return the process-wide FileAdminKeyStore, creating it on first use.
+
+    We can't build the store at import time because ``kiro.storage`` imports
+    ``kiro.config`` in a few spots — a top-level construction here would
+    create a genuine circular import. Lazy instantiation keeps both modules
+    importable in any order.
+    """
+    global _ADMIN_KEY_STORE
+    if _ADMIN_KEY_STORE is None:
+        from kiro.storage.file_backend import FileAdminKeyStore
+        _ADMIN_KEY_STORE = FileAdminKeyStore()
+    return _ADMIN_KEY_STORE
+
+
+def _sync_module_global(value: str) -> None:
+    """Keep the legacy ``PROXY_API_KEY`` module attribute in sync with the
+    store's cached value so any direct ``from kiro.config import PROXY_API_KEY``
+    consumer still sees the same string after a rotation."""
+    global PROXY_API_KEY
+    PROXY_API_KEY = value
 
 
 def get_proxy_api_key() -> str:
-    global PROXY_API_KEY
-    return PROXY_API_KEY
+    """Return the current admin API key (sync).
+
+    Preserves pre-refactor semantics: on the file backend the value is cached
+    after first read; only ``set_proxy_api_key`` updates it during a process's
+    lifetime.
+    """
+    value = _get_admin_key_store().get_sync()
+    _sync_module_global(value)
+    return value
 
 
 def set_proxy_api_key(new_key: str) -> None:
-    global PROXY_API_KEY
-    PROXY_API_KEY = new_key
-    _API_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _API_KEY_FILE.write_text(new_key)
+    """Persist a new admin API key and update in-memory state.
+
+    Writes ``data/api_key.txt`` on the file backend, exactly as before.
+    """
+    _get_admin_key_store().rotate_sync(new_key)
+    _sync_module_global(new_key)
+
+
+# Populate the legacy module global on import so
+# ``from kiro.config import PROXY_API_KEY`` still returns the right value
+# without callers having to call the function.
+PROXY_API_KEY: str = get_proxy_api_key()
 
 # ==================================================================================================
 # VPN/Proxy Settings for Kiro API Access

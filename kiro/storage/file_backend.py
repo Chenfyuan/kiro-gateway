@@ -231,23 +231,87 @@ class FileUsageStore(UsageStore):
 class FileAdminKeyStore(AdminKeyStore):
     """File-backed admin API key store, backed by ``data/api_key.txt``.
 
-    Phase 1.2b will move ``kiro.config.get_proxy_api_key`` /
-    ``set_proxy_api_key`` behind this class. Note that the file backend keeps
-    the current "each process caches independently" limitation — this is fine
-    for a single-instance deployment (which is where the file backend applies)
-    but is exactly why the Secrets-Manager-backed implementation exists for
-    the multi-instance world.
+    This class is the AUTHORITATIVE read/write point for the admin key on the
+    file backend. The historical ``kiro.config.get_proxy_api_key`` /
+    ``set_proxy_api_key`` module-globals will be re-pointed to delegate here
+    in the same commit that introduces this store, so callers keep working
+    without changes while the storage layer becomes the single source of
+    truth.
+
+    Behaviour mirrors the pre-refactor logic exactly:
+
+    * On first ``get()`` the store lazily reads ``data/api_key.txt``. If the
+      file exists and is non-empty, its trimmed contents win; otherwise we
+      fall back to the ``PROXY_API_KEY`` env var (or the hard-coded default).
+      The value is cached in memory afterwards — same "one read per process"
+      semantics as before.
+    * ``rotate(new_key)`` writes the file (creating ``data/`` if needed) and
+      updates the in-memory cache. Non-atomic ``Path.write_text`` because
+      that's what the current code does; the Secrets-Manager-backed
+      implementation is where atomicity gets solved for real.
+
+    The single-instance limitation — a rotation done from process A doesn't
+    propagate to process B until B restarts — is inherent to the file
+    backend, which is why it's only used in the single-instance deployment
+    profile.
     """
 
+    # These constants intentionally match the pre-refactor kiro.config values
+    # so migrating an old ``data/api_key.txt`` in place is a no-op.
+    _API_KEY_FILE = _PathType = None  # populated in __init__ to avoid import at module load
+
+    def __init__(self, api_key_file: Optional[str] = None) -> None:
+        # Local import so the storage package doesn't pull in Path just to
+        # exist. Also makes the file path monkeypatchable in tests.
+        from pathlib import Path
+        self._api_key_file = Path(api_key_file) if api_key_file else Path("data/api_key.txt")
+        self._cached: Optional[str] = None
+        self._loaded = False
+
+    def _load(self) -> str:
+        import os
+        if self._api_key_file.exists():
+            stored = self._api_key_file.read_text().strip()
+            if stored:
+                return stored
+        # Fall back to env var, then hard-coded default. Same precedence as
+        # the pre-refactor kiro.config module.
+        return os.getenv("PROXY_API_KEY", "my-super-secret-password-123")
+
     async def get(self) -> str:
-        raise NotImplementedError(
-            "FileAdminKeyStore.get is a Phase 1.2b task."
-        )
+        if not self._loaded:
+            self._cached = self._load()
+            self._loaded = True
+        # After the first successful load the cache is authoritative for this
+        # process — matches the current behaviour (config.PROXY_API_KEY only
+        # gets refreshed on rotate() from this same process).
+        return self._cached  # type: ignore[return-value]
 
     async def rotate(self, new_key: str) -> None:
-        raise NotImplementedError(
-            "FileAdminKeyStore.rotate is a Phase 1.2b task."
-        )
+        self._api_key_file.parent.mkdir(parents=True, exist_ok=True)
+        self._api_key_file.write_text(new_key)
+        self._cached = new_key
+        self._loaded = True
+
+    # Synchronous helpers exposed for the kiro.config compatibility shim.
+    # kiro.config exports sync get_proxy_api_key/set_proxy_api_key that a
+    # ton of code relies on; we can't make those async without a big blast
+    # radius. On the file backend the I/O is fast (a few bytes read/write),
+    # so a sync-under-async wrapper is safe. When the Redis / Secrets-Manager
+    # backends come in they'll expose the same helpers but with proper
+    # short-lived memoisation instead of blocking on the network.
+
+    def get_sync(self) -> str:
+        if not self._loaded:
+            self._cached = self._load()
+            self._loaded = True
+        return self._cached  # type: ignore[return-value]
+
+    def rotate_sync(self, new_key: str) -> None:
+        self._api_key_file.parent.mkdir(parents=True, exist_ok=True)
+        self._api_key_file.write_text(new_key)
+        self._cached = new_key
+        self._loaded = True
 
 
 # ---------------------------------------------------------------------------
