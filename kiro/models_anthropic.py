@@ -294,6 +294,57 @@ class SystemContentBlock(BaseModel):
 SystemPrompt = Union[str, List[SystemContentBlock], List[Dict[str, Any]]]
 
 
+def _hoist_system_messages(data: Any) -> Any:
+    """
+    Anthropic /v1/messages 只允许 messages[*].role 为 user/assistant，
+    但部分客户端（如 Claude Code 某些版本）会把 system 提示塞进 messages
+    数组里而不是顶层 system 字段。为了兼容这类请求，进 pydantic 校验前
+    把 role=system 的 message 提取出来，转成文本并合并到顶层 system。
+    """
+    if not isinstance(data, dict):
+        return data
+    msgs = data.get("messages")
+    if not isinstance(msgs, list):
+        return data
+
+    extracted: List[str] = []
+    remaining: List[Any] = []
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "system":
+            c = m.get("content")
+            if isinstance(c, str):
+                if c:
+                    extracted.append(c)
+            elif isinstance(c, list):
+                parts = []
+                for blk in c:
+                    if isinstance(blk, dict) and blk.get("type") == "text":
+                        t = blk.get("text")
+                        if isinstance(t, str) and t:
+                            parts.append(t)
+                if parts:
+                    extracted.append("\n\n".join(parts))
+        else:
+            remaining.append(m)
+
+    if not extracted:
+        return data
+
+    data["messages"] = remaining
+    existing = data.get("system")
+    hoisted_text = "\n\n".join(extracted)
+    if existing is None or existing == "":
+        data["system"] = hoisted_text
+    elif isinstance(existing, str):
+        data["system"] = existing + "\n\n" + hoisted_text
+    elif isinstance(existing, list):
+        # 保留原有 blocks（可能含 cache_control），把提取的文本追加为新 block
+        data["system"] = list(existing) + [{"type": "text", "text": hoisted_text}]
+    else:
+        data["system"] = hoisted_text
+    return data
+
+
 class AnthropicMessagesRequest(BaseModel):
     """
     Request to Anthropic Messages API (/v1/messages).
@@ -312,6 +363,11 @@ class AnthropicMessagesRequest(BaseModel):
         stop_sequences: Custom stop sequences
         metadata: Request metadata
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _compat_hoist_system(cls, data: Any) -> Any:
+        return _hoist_system_messages(data)
 
     model: str
     messages: List[AnthropicMessage] = Field(min_length=1)
@@ -343,17 +399,22 @@ class AnthropicMessagesRequest(BaseModel):
 class AnthropicCountTokensRequest(BaseModel):
     """
     Request to Anthropic Count Tokens API (/v1/messages/count_tokens).
-    
+
     Similar to AnthropicMessagesRequest but without generation parameters.
     Used to estimate token count before making actual request.
-    
+
     Attributes:
         model: Model ID (e.g., "claude-sonnet-4-5")
         messages: List of conversation messages
         system: System prompt (optional, string or list of content blocks)
         tools: List of available tools
     """
-    
+
+    @model_validator(mode="before")
+    @classmethod
+    def _compat_hoist_system(cls, data: Any) -> Any:
+        return _hoist_system_messages(data)
+
     model: str
     messages: List[AnthropicMessage] = Field(min_length=1)
     
