@@ -490,7 +490,18 @@ class AccountManager:
         import httpx
         url = "https://management.us-east-1.kiro.dev/"
         for account_id, account in list(self._accounts.items()):
-            if account.disabled or not account.auth_manager:
+            if account.disabled:
+                continue
+            # 启动时只初始化第一个成功账号（见 main.py），其余靠懒加载。
+            # 健康检查前先按需初始化，避免整台上除首个账号外全部被跳过、
+            # 前端始终显示旧的 health 状态。
+            if not account.auth_manager:
+                try:
+                    await self._initialize_account(account_id)
+                except Exception as e:
+                    logger.warning(f"Skip {account_id[:20]} in health_check: init failed: {e}")
+                    continue
+            if not account.auth_manager:
                 continue
             am = account.auth_manager
             if not am.profile_arn:
