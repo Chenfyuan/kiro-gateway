@@ -747,8 +747,20 @@ class AccountManager:
             logger.warning(f"Failed to fetch usage limits for {account.id[:8]}: {e}")
 
     async def refresh_all_quotas(self) -> None:
-        """Refresh usage limits for all initialized accounts."""
-        for account in self._accounts.values():
+        """
+        Refresh usage limits for all accounts.
+
+        启动时出于性能考虑只初始化第一个成功的账号（见 main.py 的启动循环），
+        其余账号靠懒加载。这里在刷新配额前，为还没有 auth_manager 的账号做
+        一次按需初始化，保证前端"刷新配额"能拉到全部账号的真实数据。
+        单账号初始化失败不影响其他账号继续。
+        """
+        for account_id, account in list(self._accounts.items()):
+            if not account.auth_manager:
+                try:
+                    await self._initialize_account(account_id)
+                except Exception as e:
+                    logger.warning(f"Skip {account_id[:20]} in refresh_all_quotas: init failed: {e}")
             if account.auth_manager:
                 await self._fetch_usage_limits(account)
         await self._save_state()
