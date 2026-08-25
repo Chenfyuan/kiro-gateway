@@ -479,23 +479,37 @@ class AccountManager:
                     self._dirty = False
     
     async def health_check_all(self) -> None:
-        """Run connectivity health check on all initialized, non-disabled accounts."""
+        """
+        Run connectivity health check on all initialized, non-disabled accounts.
+
+        用新的 AmazonCodeWhispererService.GetUsageLimits 做探活（旧的
+        q.<region>.amazonaws.com GET 端点已被 AWS 弃用，对 KIRO POWER 订阅
+        无条件返 403，会把健康的账号统统误判成 failed）。
+        """
         import time
         import httpx
+        url = "https://management.us-east-1.kiro.dev/"
         for account_id, account in list(self._accounts.items()):
             if account.disabled or not account.auth_manager:
                 continue
+            am = account.auth_manager
+            if not am.profile_arn:
+                continue
             try:
-                url = (
-                    f"https://q.{account.auth_manager.api_region}.amazonaws.com"
-                    "/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
-                )
-                token = await account.auth_manager.get_access_token()
-                headers = get_kiro_headers(account.auth_manager, token)
+                token = await am.get_access_token()
+                headers = {
+                    "authorization": f"Bearer {token}",
+                    "content-type": "application/x-amz-json-1.0",
+                    "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
+                    "x-amzn-codewhisperer-optout": "true",
+                }
+                body = {"profileArn": am.profile_arn, "origin": "KIRO_CLI", "isEmailRequired": False}
                 async with httpx.AsyncClient(timeout=10) as client:
-                    response = await client.get(url, headers=headers)
+                    response = await client.post(url, headers=headers, content=json.dumps(body))
                 account.last_health_check_at = time.time()
                 account.last_health_status = "ok" if response.status_code == 200 else "failed"
+                if response.status_code != 200:
+                    logger.warning(f"Health check {account_id[:20]} HTTP {response.status_code}: {response.text[:120]}")
             except Exception as e:
                 import time as _t
                 account.last_health_check_at = _t.time()
