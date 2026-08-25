@@ -643,11 +643,12 @@ class AccountManager:
             account.model_resolver = model_resolver
             account.models_cached_at = time.time()
 
-            # Fetch user email
-            try:
-                account.email = await self._fetch_user_email(auth_manager)
-            except Exception as e:
-                logger.warning(f"Failed to fetch email for {account_id}: {e}")
+            # Fetch user email (仅在还没有真实 email 时才覆盖，避免 fallback 覆盖历史真实值)
+            if not account.email or "@" not in account.email:
+                try:
+                    account.email = await self._fetch_user_email(auth_manager)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch email for {account_id}: {e}")
 
             # Update model_to_accounts mapping
             available_models = model_resolver.get_available_models()
@@ -702,37 +703,46 @@ class AccountManager:
 
     async def _fetch_usage_limits(self, account: "Account") -> None:
         """
-        Fetch and update usage limits for an account.
-        For SSO/enterprise accounts where getUsageLimits returns 403,
-        marks quota as unlimited (-1).
+        通过新版 AmazonCodeWhispererService.GetUsageLimits 拉取账号用量。
+
+        2026-08 起，旧的 GET https://q.<region>.amazonaws.com/getUsageLimits 对
+        Kiro POWER 订阅返回 403，改为 POST 到 management.us-east-1.kiro.dev
+        并要求带 profileArn 和 origin=KIRO_CLI，走 AWS JSON 1.0 协议。
         """
-        if not account.auth_manager:
+        am = account.auth_manager
+        if not am or not am.profile_arn:
             return
-        url = f"https://q.{account.auth_manager.api_region}.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
-        token = await account.auth_manager.get_access_token()
-        headers = get_kiro_headers(account.auth_manager, token)
+        token = await am.get_access_token()
+        url = "https://management.us-east-1.kiro.dev/"
+        headers = {
+            "authorization": f"Bearer {token}",
+            "content-type": "application/x-amz-json-1.0",
+            "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
+            "x-amzn-codewhisperer-optout": "true",
+        }
+        body = {"profileArn": am.profile_arn, "origin": "KIRO_CLI", "isEmailRequired": False}
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(url, headers=headers)
-                if response.status_code == 200:
-                    data = response.json()
-                    breakdown_list = data.get("usageBreakdownList") or []
-                    if breakdown_list:
-                        breakdown = breakdown_list[0]
-                        account.current_usage = breakdown.get("currentUsage", 0)
-                        account.usage_limit = breakdown.get("usageLimit", 0)
-                        account.quota_updated_at = time.time()
-                        logger.info(f"Account {account.id[:8]} usage: {account.current_usage}/{account.usage_limit}")
-                    # Also update email if missing
-                    if not account.email:
-                        user_info = data.get("userInfo") or {}
-                        account.email = user_info.get("email")
-                elif response.status_code == 403:
-                    account.usage_limit = -1
-                    account.current_usage = 0
+                response = await client.post(url, headers=headers, content=json.dumps(body))
+            if response.status_code == 200:
+                data = response.json()
+                breakdown_list = data.get("usageBreakdownList") or []
+                if breakdown_list:
+                    b = breakdown_list[0]
+                    # 优先用带精度的字段，退化到整数字段
+                    account.current_usage = b.get("currentUsageWithPrecision", b.get("currentUsage", 0))
+                    account.usage_limit = b.get("usageLimitWithPrecision", b.get("usageLimit", 0))
                     account.quota_updated_at = time.time()
-                    logger.info(f"Account {account.id[:8]}: getUsageLimits 403, marking as unlimited (enterprise/SSO)")
+                    logger.info(f"Account {account.id[:8]} usage: {account.current_usage}/{account.usage_limit}")
+            elif response.status_code == 403:
+                # 上游明确拒绝，标未知（None）而不是 -1（unlimited），避免误导
+                account.usage_limit = None
+                account.current_usage = None
+                account.quota_updated_at = time.time()
+                logger.info(f"Account {account.id[:8]}: GetUsageLimits 403 - {response.text[:120]}")
+            else:
+                logger.warning(f"Account {account.id[:8]}: GetUsageLimits HTTP {response.status_code} - {response.text[:120]}")
         except Exception as e:
             logger.warning(f"Failed to fetch usage limits for {account.id[:8]}: {e}")
 
