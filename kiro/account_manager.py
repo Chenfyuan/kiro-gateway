@@ -668,8 +668,10 @@ class AccountManager:
 
     async def _fetch_user_email(self, auth_manager: KiroAuthManager) -> Optional[str]:
         """
-        Fetch user email via Kiro getUsageLimits API.
-        Falls back to profile ARN region label for SSO accounts where API returns 403.
+        Fetch user email via new AmazonCodeWhispererService.GetUsageLimits.
+        （2026-08 起旧的 q.<region>.amazonaws.com GET 端点对 KIRO POWER 订阅返回 403，
+        改用新的 management.us-east-1.kiro.dev POST 端点，isEmailRequired=true 时
+        userInfo.email 会带回真实邮箱。）
 
         Args:
             auth_manager: Initialized auth manager with valid token
@@ -677,29 +679,36 @@ class AccountManager:
         Returns:
             Email string, fallback label, or None
         """
-        url = f"https://q.{auth_manager.api_region}.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+        if not auth_manager.profile_arn:
+            return None
         token = await auth_manager.get_access_token()
-        headers = get_kiro_headers(auth_manager, token)
+        url = "https://management.us-east-1.kiro.dev/"
+        headers = {
+            "authorization": f"Bearer {token}",
+            "content-type": "application/x-amz-json-1.0",
+            "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
+            "x-amzn-codewhisperer-optout": "true",
+        }
+        body = {"profileArn": auth_manager.profile_arn, "origin": "KIRO_CLI", "isEmailRequired": True}
 
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(url, headers=headers)
+            response = await client.post(url, headers=headers, content=json.dumps(body))
             if response.status_code == 200:
                 data = response.json()
-                user_info = data.get("userInfo") or {}
-                email = user_info.get("email")
+                email = ((data.get("userInfo") or {}).get("email") or "").strip()
                 if email:
                     logger.info(f"Got user email: {email}")
-                return email
+                    return email
+                logger.warning("GetUsageLimits 200 but userInfo.email missing")
             else:
-                logger.warning(f"getUsageLimits failed: HTTP {response.status_code}")
-                if auth_manager.profile_arn:
-                    import re
-                    m = re.search(r":codewhisperer:([^:]+):", auth_manager.profile_arn)
-                    region_label = m.group(1) if m else "unknown"
-                    label = f"SSO ({region_label})"
-                    logger.info(f"Using fallback label: {label}")
-                    return label
-                return None
+                logger.warning(f"GetUsageLimits failed: HTTP {response.status_code} - {response.text[:120]}")
+            # Fallback: 用 profile ARN region 拼一个占位标签
+            import re
+            m = re.search(r":codewhisperer:([^:]+):", auth_manager.profile_arn)
+            region_label = m.group(1) if m else "unknown"
+            label = f"SSO ({region_label})"
+            logger.info(f"Using fallback label: {label}")
+            return label
 
     async def _fetch_usage_limits(self, account: "Account") -> None:
         """
@@ -720,7 +729,7 @@ class AccountManager:
             "x-amz-target": "AmazonCodeWhispererService.GetUsageLimits",
             "x-amzn-codewhisperer-optout": "true",
         }
-        body = {"profileArn": am.profile_arn, "origin": "KIRO_CLI", "isEmailRequired": False}
+        body = {"profileArn": am.profile_arn, "origin": "KIRO_CLI", "isEmailRequired": True}
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -735,6 +744,14 @@ class AccountManager:
                     account.usage_limit = b.get("usageLimitWithPrecision", b.get("usageLimit", 0))
                     account.quota_updated_at = time.time()
                     logger.info(f"Account {account.id[:8]} usage: {account.current_usage}/{account.usage_limit}")
+                # 顺带把 email 从 userInfo 里补回来：新接口返 email，
+                # 覆盖历史遗留的 fallback 占位符（如 "SSO (us-east-1)"）或空值，
+                # 但保留已有真实 email 不被覆盖。
+                fresh_email = ((data.get("userInfo") or {}).get("email") or "").strip()
+                if fresh_email:
+                    cur = account.email or ""
+                    if "@" not in cur or cur != fresh_email:
+                        account.email = fresh_email
             elif response.status_code == 403:
                 # 上游明确拒绝，标未知（None）而不是 -1（unlimited），避免误导
                 account.usage_limit = None
