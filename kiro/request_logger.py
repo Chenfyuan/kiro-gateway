@@ -63,6 +63,20 @@ class RequestLogger:
             self._conn.execute("ALTER TABLE request_logs ADD COLUMN response_body TEXT")
             self._conn.commit()
 
+        # Migration: caller identity. Rows written before this existed keep NULL
+        # rather than being back-filled with a guess - per-user reports show them
+        # as unknown, which is the truth.
+        try:
+            self._conn.execute("SELECT user_id FROM request_logs LIMIT 1")
+        except sqlite3.OperationalError:
+            self._conn.execute("ALTER TABLE request_logs ADD COLUMN user_id TEXT")
+            self._conn.execute("ALTER TABLE request_logs ADD COLUMN user_name TEXT")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_user_id ON request_logs(user_id)"
+            )
+            self._conn.commit()
+            logger.info("RequestLogger: added user_id/user_name columns")
+
         logger.info("RequestLogger initialized")
 
     async def record(
@@ -80,6 +94,8 @@ class RequestLogger:
         request_id: str = "",
         request_body: str = "",
         response_body: str = "",
+        user_id: str = "",
+        user_name: str = "",
     ) -> None:
         """Record a request log entry."""
         async with self._lock:
@@ -88,11 +104,12 @@ class RequestLogger:
                     """INSERT INTO request_logs
                        (model, api_type, streaming, status, status_code, duration_ms,
                         prompt_tokens, completion_tokens, account_id, error_message, request_id,
-                        request_body, response_body)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        request_body, response_body, user_id, user_name)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (model, api_type, 1 if streaming else 0, status, status_code,
                      duration_ms, prompt_tokens, completion_tokens, account_id,
-                     error_message, request_id, request_body, response_body),
+                     error_message, request_id, request_body, response_body,
+                     user_id, user_name),
                 )
                 self._conn.commit()
             except Exception as e:
@@ -176,6 +193,83 @@ class RequestLogger:
             "success_rate": round(success / total * 100, 1) if total > 0 else 0,
             "avg_duration_ms": round(avg_ms),
         }
+
+    # ── Per-user usage ──────────────────────────────────────────────────────
+    #
+    # These read request_logs rather than the token_usage table because only
+    # request_logs carries the caller's identity. Rows written before the
+    # user_id column existed are reported under the "unknown" bucket instead of
+    # being attributed to someone.
+
+    async def get_user_usage(self, days: int = 30) -> List[dict]:
+        """Total tokens and requests per user, highest usage first."""
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        async with self._lock:
+            rows = self._conn.execute(
+                """SELECT
+                    COALESCE(NULLIF(user_id, ''), '__unknown__') AS user_id,
+                    COALESCE(NULLIF(MAX(user_name), ''), '未知（无身份记录）') AS user_name,
+                    COUNT(*) AS requests,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                    COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                    COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens
+                   FROM request_logs
+                   WHERE timestamp >= ?
+                   GROUP BY COALESCE(NULLIF(user_id, ''), '__unknown__')
+                   ORDER BY total_tokens DESC""",
+                (since,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_user_daily_usage(self, days: int = 30, user_id: str = "") -> List[dict]:
+        """Per-day token totals, optionally narrowed to one user."""
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        sql = """SELECT
+                    DATE(timestamp) AS date,
+                    COALESCE(NULLIF(user_id, ''), '__unknown__') AS user_id,
+                    COALESCE(NULLIF(MAX(user_name), ''), '未知（无身份记录）') AS user_name,
+                    COUNT(*) AS requests,
+                    COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                    COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                    COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens
+                 FROM request_logs
+                 WHERE timestamp >= ?"""
+        params: list = [since]
+        if user_id:
+            sql += " AND COALESCE(NULLIF(user_id, ''), '__unknown__') = ?"
+            params.append(user_id)
+        sql += """ GROUP BY DATE(timestamp), COALESCE(NULLIF(user_id, ''), '__unknown__')
+                   ORDER BY date ASC"""
+
+        async with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_user_model_usage(self, days: int = 30, user_id: str = "") -> List[dict]:
+        """Per-model token totals, optionally narrowed to one user."""
+        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        sql = """SELECT
+                    COALESCE(NULLIF(user_id, ''), '__unknown__') AS user_id,
+                    COALESCE(NULLIF(MAX(user_name), ''), '未知（无身份记录）') AS user_name,
+                    COALESCE(NULLIF(model, ''), '(unknown)') AS model,
+                    COUNT(*) AS requests,
+                    COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                    COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                    COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens
+                 FROM request_logs
+                 WHERE timestamp >= ?"""
+        params: list = [since]
+        if user_id:
+            sql += " AND COALESCE(NULLIF(user_id, ''), '__unknown__') = ?"
+            params.append(user_id)
+        sql += """ GROUP BY COALESCE(NULLIF(user_id, ''), '__unknown__'),
+                            COALESCE(NULLIF(model, ''), '(unknown)')
+                   ORDER BY total_tokens DESC"""
+
+        async with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
 
     async def close(self) -> None:
         """Close database connection."""

@@ -565,6 +565,117 @@ async def usage_by_model(request: Request, days: int = 30, authorization: str = 
     return {"days": days, "data": await tracker.get_model_stats(days)}
 
 
+# ─── Per-User Usage Endpoints ───────────────────────────────────────────────
+#
+# These read request_logs (not the token_usage table) because only request_logs
+# carries the caller's identity. Requests logged before per-user keys existed
+# appear under user_id "__unknown__"; traffic using the legacy global
+# PROXY_API_KEY appears under "__unassigned__".
+
+def _require_request_logger(request: Request):
+    rl = getattr(request.app.state, "request_logger", None)
+    if not rl:
+        raise HTTPException(status_code=503, detail="Request logger not initialized")
+    return rl
+
+
+@router.get("/usage/by-user")
+async def usage_by_user(request: Request, days: int = 30, authorization: str = Header(None)):
+    """Token totals per user, highest first."""
+    _verify_admin_auth(authorization)
+    rl = _require_request_logger(request)
+    return {"days": days, "data": await rl.get_user_usage(days)}
+
+
+@router.get("/usage/by-user/daily")
+async def usage_by_user_daily(request: Request, days: int = 30, user_id: str = "",
+                             authorization: str = Header(None)):
+    """Per-day token totals; pass user_id to narrow to one user."""
+    _verify_admin_auth(authorization)
+    rl = _require_request_logger(request)
+    return {"days": days, "user_id": user_id, "data": await rl.get_user_daily_usage(days, user_id)}
+
+
+@router.get("/usage/by-user/models")
+async def usage_by_user_models(request: Request, days: int = 30, user_id: str = "",
+                              authorization: str = Header(None)):
+    """Per-model token totals; pass user_id to narrow to one user."""
+    _verify_admin_auth(authorization)
+    rl = _require_request_logger(request)
+    return {"days": days, "user_id": user_id, "data": await rl.get_user_model_usage(days, user_id)}
+
+
+# ─── Per-User Proxy Key Endpoints ───────────────────────────────────────────
+#
+# Keys are provisioned by ai-console (which owns the user table) and pushed
+# here. One key per user, enforced by a UNIQUE constraint on user_id.
+
+def _require_key_store(request: Request):
+    store = getattr(request.app.state, "proxy_key_store", None)
+    if not store:
+        raise HTTPException(status_code=503, detail="Proxy key store not initialized")
+    return store
+
+
+class UpsertProxyKeyRequest(BaseModel):
+    api_key: str = Field(..., min_length=8, description="Key value the client will send")
+    user_id: str = Field(..., min_length=1, description="ai-console user id")
+    user_name: str = Field("", description="Display name for reports")
+    enabled: bool = Field(True)
+
+
+@router.get("/proxy-keys")
+async def list_proxy_keys(request: Request, authorization: str = Header(None)):
+    """List per-user keys. Key values are masked and never returned in full."""
+    _verify_admin_auth(authorization)
+    store = _require_key_store(request)
+    return {"data": await store.list_keys()}
+
+
+@router.post("/proxy-keys")
+async def upsert_proxy_key(request: Request, payload: UpsertProxyKeyRequest,
+                          authorization: str = Header(None)):
+    """
+    Create or rotate the key for one user.
+
+    Re-posting for an existing user_id replaces that user's key rather than
+    adding a second one, so the one-key-per-user rule cannot be bypassed.
+    """
+    _verify_admin_auth(authorization)
+    store = _require_key_store(request)
+    try:
+        result = await store.upsert(payload.api_key, payload.user_id,
+                                   payload.user_name, payload.enabled)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # A duplicate api_key (same value already bound to another user) lands here.
+        logger.warning(f"Failed to upsert proxy key for {payload.user_id}: {e}")
+        raise HTTPException(status_code=409, detail="API key already in use by another user")
+    return {"status": "ok", **result}
+
+
+@router.patch("/proxy-keys/{user_id}")
+async def set_proxy_key_enabled(request: Request, user_id: str, enabled: bool,
+                               authorization: str = Header(None)):
+    """Enable or disable a user's key without deleting it."""
+    _verify_admin_auth(authorization)
+    store = _require_key_store(request)
+    if not await store.set_enabled(user_id, enabled):
+        raise HTTPException(status_code=404, detail=f"No key for user: {user_id}")
+    return {"status": "ok", "user_id": user_id, "enabled": enabled}
+
+
+@router.delete("/proxy-keys/{user_id}")
+async def delete_proxy_key(request: Request, user_id: str, authorization: str = Header(None)):
+    """Revoke a user's key."""
+    _verify_admin_auth(authorization)
+    store = _require_key_store(request)
+    if not await store.delete(user_id):
+        raise HTTPException(status_code=404, detail=f"No key for user: {user_id}")
+    return {"status": "ok", "user_id": user_id}
+
+
 # ─── Request Logs Endpoints ─────────────────────────────────────────────────
 
 @router.get("/logs")

@@ -30,6 +30,7 @@ import asyncio
 import json
 import time as _time
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -41,6 +42,7 @@ from kiro.config import (
     APP_VERSION,
     PROFILE_ARN,
 )
+from kiro.caller_identity import resolve_caller, caller_of
 from kiro.models_openai import (
     OpenAIModel,
     ModelList,
@@ -67,22 +69,34 @@ except ImportError:
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
-async def verify_api_key(auth_header: str = Security(api_key_header)) -> bool:
+async def verify_api_key(
+    request: Request,
+    auth_header: str = Security(api_key_header),
+) -> bool:
     """
     Verify API key in Authorization header.
-    
-    Expects format: "Bearer {PROXY_API_KEY}"
-    
+
+    Accepts either a per-user key or the legacy global PROXY_API_KEY; the
+    resolved identity is attached to the request so usage can be attributed to
+    a user. See kiro.caller_identity for the matching rules.
+
+    Expects format: "Bearer {key}"
+
     Args:
+        request: Incoming request (receives the resolved identity)
         auth_header: Authorization header value
-    
+
     Returns:
         True if key is valid
-    
+
     Raises:
         HTTPException: 401 if key is invalid or missing
     """
-    if not auth_header or auth_header != f"Bearer {get_proxy_api_key()}":
+    bearer = None
+    if auth_header and auth_header.startswith("Bearer "):
+        bearer = auth_header[len("Bearer "):]
+
+    if resolve_caller(request, bearer) is None:
         logger.warning("Access attempt with invalid API key.")
         raise HTTPException(status_code=401, detail="Invalid or missing API Key")
     return True
@@ -449,6 +463,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                         error_message=str(streaming_error)[:500] if streaming_error else "",
                                         request_body=json.dumps(request_data.model_dump(), ensure_ascii=False),
                                         response_body=json.dumps(stream_usage) if stream_usage else "",
+                                        **caller_of(request),
                                     )
                                 if debug_logger:
                                     if streaming_error:
@@ -502,6 +517,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                 request_id=openai_response.get("id", ""),
                                 request_body=json.dumps(request_data.model_dump(), ensure_ascii=False),
                                 response_body=json.dumps(openai_response, ensure_ascii=False),
+                                **caller_of(request),
                             ))
 
                         return JSONResponse(content=openai_response)

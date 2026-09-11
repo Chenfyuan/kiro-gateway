@@ -31,3 +31,6 @@ requests/
 .pytest_cache/
 .coverage
 htmlcov/
+# Runtime data (mounted as a volume in deployment; never committed)
+data/
+data.bak*

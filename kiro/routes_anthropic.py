@@ -27,6 +27,7 @@ Reference: https://docs.anthropic.com/en/api/messages
 
 import asyncio
 import json
+import time as _time
 from typing import Optional
 
 import httpx
@@ -36,6 +37,7 @@ from fastapi.security import APIKeyHeader
 from loguru import logger
 
 from kiro.config import get_proxy_api_key, PROFILE_ARN
+from kiro.caller_identity import resolve_caller, caller_of
 from kiro.models_anthropic import (
     AnthropicMessagesRequest,
     AnthropicCountTokensRequest,
@@ -72,34 +74,40 @@ auth_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
 async def verify_anthropic_api_key(
+    request: Request,
     x_api_key: Optional[str] = Security(anthropic_api_key_header),
     authorization: Optional[str] = Security(auth_header)
 ) -> bool:
     """
     Verify API key for Anthropic API.
-    
+
     Supports two authentication methods:
     1. x-api-key header (Anthropic native)
     2. Authorization: Bearer header (for compatibility)
-    
+
+    Either header may carry a per-user key or the legacy global PROXY_API_KEY;
+    the resolved identity is attached to the request so usage can be attributed
+    to a user. See kiro.caller_identity for the matching rules.
+
     Args:
+        request: Incoming request (receives the resolved identity)
         x_api_key: Value from x-api-key header
         authorization: Value from Authorization header
-    
+
     Returns:
         True if key is valid
-    
+
     Raises:
         HTTPException: 401 if key is invalid or missing
     """
-    # Check x-api-key first (Anthropic native)
-    if x_api_key and x_api_key == get_proxy_api_key():
+    bearer = None
+    if authorization and authorization.startswith("Bearer "):
+        bearer = authorization[len("Bearer "):]
+
+    # x-api-key is checked first, matching the Anthropic-native precedence.
+    if resolve_caller(request, x_api_key, bearer) is not None:
         return True
 
-    # Fall back to Authorization: Bearer
-    if authorization and authorization == f"Bearer {get_proxy_api_key()}":
-        return True
-    
     logger.warning("Access attempt with invalid API key (Anthropic endpoint)")
     raise HTTPException(
         status_code=401,
@@ -111,6 +119,37 @@ async def verify_anthropic_api_key(
             }
         }
     )
+
+
+def _scrape_stream_usage(chunk: str, into: dict) -> None:
+    """
+    Pull token counts out of an outgoing SSE chunk.
+
+    Anthropic reports usage in two places: input_tokens on message_start and
+    output_tokens on message_delta, so both are merged into one dict as they go
+    by. Purely observational - malformed or unrelated chunks are ignored, and a
+    parse failure must never break the stream being forwarded.
+    """
+    if not chunk or "usage" not in chunk:
+        return
+    for line in chunk.splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except Exception:
+            continue
+        usage = event.get("usage")
+        if not usage and isinstance(event.get("message"), dict):
+            usage = event["message"].get("usage")
+        if isinstance(usage, dict):
+            for key in ("input_tokens", "output_tokens"):
+                value = usage.get(key)
+                if isinstance(value, int) and value > 0:
+                    into[key] = value
 
 
 # --- Router ---
@@ -147,7 +186,10 @@ async def messages(
         HTTPException: On validation or API errors
     """
     logger.info(f"Request to /v1/messages (model={request_data.model}, stream={request_data.stream})")
-    
+
+    # Wall-clock start for request_logs.duration_ms.
+    _req_start_time = _time.time()
+
     if anthropic_version:
         logger.debug(f"Anthropic-Version header: {anthropic_version}")
     
@@ -443,12 +485,17 @@ async def messages(
                         async def stream_wrapper():
                             streaming_error = None
                             client_disconnected = False
+                            # Token counts arrive inside the SSE stream, so they
+                            # are scraped as chunks pass through (same approach as
+                            # the OpenAI route). Anthropic splits them: input_tokens
+                            # on message_start, output_tokens on message_delta.
+                            stream_usage = {}
                             try:
                                 async def make_retry_request():
                                     return await http_client.request_with_retry(
                                         "POST", url, kiro_payload, stream=True
                                     )
-                                
+
                                 async for chunk in stream_with_first_token_retry_anthropic(
                                     make_request=make_retry_request,
                                     model=request_data.model,
@@ -459,6 +506,7 @@ async def messages(
                                     request_tools=tools_for_tokenizer,
                                     request_system=system_for_tokenizer,
                                 ):
+                                    _scrape_stream_usage(chunk, stream_usage)
                                     yield chunk
                             except GeneratorExit:
                                 client_disconnected = True
@@ -486,7 +534,34 @@ async def messages(
                                         debug_logger.flush_on_error(500, str(streaming_error))
                                     else:
                                         debug_logger.discard_buffers()
-                        
+
+                                # Record token usage for streaming
+                                if stream_usage and not streaming_error and hasattr(request.app.state, "usage_tracker"):
+                                    asyncio.create_task(request.app.state.usage_tracker.record(
+                                        model=request_data.model,
+                                        prompt_tokens=stream_usage.get("input_tokens", 0),
+                                        completion_tokens=stream_usage.get("output_tokens", 0),
+                                        account_id=account.id if account else "",
+                                        api_type="anthropic",
+                                    ))
+
+                                # Record request log for streaming. Runs even on
+                                # error or client disconnect so a failed turn is
+                                # still attributable, matching the OpenAI route.
+                                if hasattr(request.app.state, "request_logger"):
+                                    asyncio.create_task(request.app.state.request_logger.record(
+                                        model=request_data.model,
+                                        api_type="anthropic",
+                                        streaming=True,
+                                        status="error" if streaming_error else "success",
+                                        duration_ms=int((_time.time() - _req_start_time) * 1000),
+                                        prompt_tokens=stream_usage.get("input_tokens", 0),
+                                        completion_tokens=stream_usage.get("output_tokens", 0),
+                                        account_id=account.id if account else "",
+                                        error_message=str(streaming_error)[:500] if streaming_error else "",
+                                        **caller_of(request),
+                                    ))
+
                         return StreamingResponse(
                             stream_wrapper(),
                             media_type="text/event-stream",
@@ -524,6 +599,24 @@ async def messages(
                                 account_id=account.id if account else "",
                                 api_type="anthropic",
                                 request_id=anthropic_response.get("id", ""),
+                            ))
+
+                        # Record request log. This endpoint previously wrote only
+                        # to usage_tracker, so /v1/messages traffic never reached
+                        # request_logs at all - per-user reports would have been
+                        # empty for the busiest path.
+                        if hasattr(request.app.state, "request_logger"):
+                            asyncio.create_task(request.app.state.request_logger.record(
+                                model=request_data.model,
+                                api_type="anthropic",
+                                streaming=False,
+                                status="success",
+                                duration_ms=int((_time.time() - _req_start_time) * 1000),
+                                prompt_tokens=usage.get("input_tokens", 0),
+                                completion_tokens=usage.get("output_tokens", 0),
+                                account_id=account.id if account else "",
+                                request_id=anthropic_response.get("id", ""),
+                                **caller_of(request),
                             ))
 
                         return JSONResponse(content=anthropic_response)

@@ -43,6 +43,7 @@ credentials.json
 state.json
 kiro-auth-token*.json
 data/
+data.bak*
 
 # Documentation
 docs/

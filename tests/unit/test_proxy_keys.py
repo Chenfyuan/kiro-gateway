@@ -1,0 +1,166 @@
+# -*- coding: utf-8 -*-
+"""Tests for per-user proxy keys and per-user usage attribution."""
+
+import pytest
+
+from kiro.proxy_keys import ProxyKeyStore, UNASSIGNED_USER_ID, _mask
+from kiro.request_logger import RequestLogger
+
+
+async def _store(tmp_path) -> ProxyKeyStore:
+    s = ProxyKeyStore(db_path=str(tmp_path / "keys.db"))
+    await s.init_db()
+    return s
+
+
+async def _rlogger(tmp_path) -> RequestLogger:
+    rl = RequestLogger(db_path=str(tmp_path / "logs.db"))
+    await rl.init_db()
+    return rl
+
+
+class TestProxyKeyStore:
+    @pytest.mark.asyncio
+    async def test_upsert_then_resolve(self, tmp_path):
+        store = await _store(tmp_path)
+        await store.upsert("key-alice", "u1", "Alice")
+        assert store.resolve("key-alice") == {"user_id": "u1", "user_name": "Alice"}
+
+    @pytest.mark.asyncio
+    async def test_unknown_key_does_not_resolve(self, tmp_path):
+        store = await _store(tmp_path)
+        assert store.resolve("never-issued") is None
+        assert store.resolve("") is None
+
+    @pytest.mark.asyncio
+    async def test_disabled_key_does_not_authenticate(self, tmp_path):
+        store = await _store(tmp_path)
+        await store.upsert("key-bob", "u2", "Bob")
+        assert await store.set_enabled("u2", False) is True
+        # A disabled key must behave like an unknown one, not merely be flagged.
+        assert store.resolve("key-bob") is None
+
+    @pytest.mark.asyncio
+    async def test_reissue_rotates_instead_of_adding_second_key(self, tmp_path):
+        """One key per user: re-issuing must invalidate the previous value."""
+        store = await _store(tmp_path)
+        await store.upsert("key-old", "u3", "Carol")
+        await store.upsert("key-new", "u3", "Carol")
+
+        assert store.resolve("key-old") is None
+        assert store.resolve("key-new")["user_id"] == "u3"
+        assert len(await store.list_keys()) == 1
+
+    @pytest.mark.asyncio
+    async def test_reserved_user_id_rejected(self, tmp_path):
+        """The unassigned bucket is not a real user and cannot own a key."""
+        store = await _store(tmp_path)
+        with pytest.raises(ValueError):
+            await store.upsert("key-x", UNASSIGNED_USER_ID, "nope")
+
+    @pytest.mark.asyncio
+    async def test_delete_revokes(self, tmp_path):
+        store = await _store(tmp_path)
+        await store.upsert("key-dave", "u4", "Dave")
+        assert await store.delete("u4") is True
+        assert store.resolve("key-dave") is None
+        assert await store.delete("u4") is False
+
+    @pytest.mark.asyncio
+    async def test_list_never_exposes_full_key(self, tmp_path):
+        store = await _store(tmp_path)
+        await store.upsert("supersecretkeyvalue", "u5", "Eve")
+        rows = await store.list_keys()
+        assert rows[0]["api_key_masked"] == "supe...alue"
+        assert "api_key" not in rows[0]
+        assert all("supersecretkeyvalue" not in str(v) for v in rows[0].values())
+
+    def test_mask_short_key_reveals_nothing(self):
+        assert _mask("abc") == "***"
+        assert _mask("") == ""
+
+
+class TestPerUserUsage:
+    @pytest.mark.asyncio
+    async def test_usage_grouped_by_user(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model="m1", prompt_tokens=100, completion_tokens=50,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model="m1", prompt_tokens=10, completion_tokens=5,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model="m2", prompt_tokens=1000, completion_tokens=500,
+                             user_id="u2", user_name="Bob")
+
+        rows = await rlogger.get_user_usage(days=30)
+        by_user = {r["user_id"]: r for r in rows}
+
+        assert by_user["u1"]["total_tokens"] == 165
+        assert by_user["u1"]["requests"] == 2
+        assert by_user["u2"]["total_tokens"] == 1500
+        # Ordered by consumption, so the heaviest user is actionable at a glance.
+        assert rows[0]["user_id"] == "u2"
+
+    @pytest.mark.asyncio
+    async def test_rows_without_identity_are_reported_as_unknown(self, tmp_path):
+        """
+        Requests logged before per-user keys existed carry no user_id. They must
+        surface as a distinct unknown bucket rather than being attributed to
+        someone or silently dropped from totals.
+        """
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model="m1", prompt_tokens=7, completion_tokens=3)
+
+        rows = await rlogger.get_user_usage(days=30)
+        assert len(rows) == 1
+        assert rows[0]["user_id"] == "__unknown__"
+        assert rows[0]["total_tokens"] == 10
+
+    @pytest.mark.asyncio
+    async def test_daily_breakdown(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model="m1", prompt_tokens=100, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        rows = await rlogger.get_user_daily_usage(days=30)
+        assert len(rows) == 1
+        assert rows[0]["date"]
+        assert rows[0]["total_tokens"] == 100
+
+    @pytest.mark.asyncio
+    async def test_model_breakdown_and_user_filter(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model="opus", prompt_tokens=100, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model="haiku", prompt_tokens=20, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model="opus", prompt_tokens=999, completion_tokens=0,
+                             user_id="u2", user_name="Bob")
+
+        all_rows = await rlogger.get_user_model_usage(days=30)
+        assert len(all_rows) == 3
+
+        only_u1 = await rlogger.get_user_model_usage(days=30, user_id="u1")
+        assert {r["model"] for r in only_u1} == {"opus", "haiku"}
+        assert all(r["user_id"] == "u1" for r in only_u1)
+
+
+class TestCallerIdentity:
+    """
+    Legacy global-key traffic must stay authenticated and land in its own bucket
+    rather than being rejected or attributed to a real user.
+    """
+
+    @pytest.mark.asyncio
+    async def test_global_key_resolves_to_unassigned(self, tmp_path, monkeypatch):
+        from kiro import caller_identity
+
+        monkeypatch.setattr(caller_identity, "get_proxy_api_key", lambda: "global-key")
+        identity = caller_identity.resolve_caller(None, "global-key")
+        assert identity["user_id"] == UNASSIGNED_USER_ID
+
+    @pytest.mark.asyncio
+    async def test_unknown_credential_is_rejected(self, tmp_path, monkeypatch):
+        from kiro import caller_identity
+
+        monkeypatch.setattr(caller_identity, "get_proxy_api_key", lambda: "global-key")
+        assert caller_identity.resolve_caller(None, "bogus") is None
+        assert caller_identity.resolve_caller(None, None) is None

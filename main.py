@@ -525,6 +525,11 @@ async def lifespan(app: FastAPI):
     app.state.request_logger = RequestLogger(db_path="data/token_usage.db")
     await app.state.request_logger.init_db()
 
+    # Initialize per-user proxy key store (auth reads this on every request)
+    from kiro.proxy_keys import ProxyKeyStore
+    app.state.proxy_key_store = ProxyKeyStore(db_path="data/token_usage.db")
+    await app.state.proxy_key_store.init_db()
+
     yield
 
     # Graceful shutdown
@@ -535,6 +540,9 @@ async def lifespan(app: FastAPI):
 
     # Close request logger
     await app.state.request_logger.close()
+
+    # Close proxy key store
+    await app.state.proxy_key_store.close()
 
     # Cancel background tasks
     for task in (save_task, health_check_task):
