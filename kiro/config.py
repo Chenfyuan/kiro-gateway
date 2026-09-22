@@ -366,6 +366,40 @@ TRUNCATION_RECOVERY: bool = os.getenv("TRUNCATION_RECOVERY", "false").lower() in
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # ==================================================================================================
+# Request Body Logging (request_logs table size control)
+# ==================================================================================================
+
+# Whether to store request/response bodies for SUCCESSFUL requests.
+#
+# Bodies dominate the request_logs table: on a busy instance a stat row costs
+# well under 100 bytes while its bodies average 200+ KB - a ~2000x difference.
+# Keeping bodies for every success is what grows token_usage.db into the tens of
+# gigabytes and eventually fills the disk.
+#
+# Turning this off keeps every statistics row intact (model, tokens, user_id,
+# status, duration), so per-user/per-day/per-model reporting is unaffected. Only
+# the raw payloads of successful calls are dropped - and a call that succeeded is
+# rarely the one you need to inspect afterwards.
+#
+# Failures always keep their bodies regardless of this setting: that is the case
+# where the payload is the evidence (see LOG_FAILURE_BODY).
+# Default: False (do not store bodies for successful requests)
+LOG_SUCCESS_BODY: bool = os.getenv("LOG_SUCCESS_BODY", "false").lower() in ("1", "true", "yes")
+
+# Whether to store request/response bodies for FAILED requests.
+#
+# Keep this on unless the disk is genuinely desperate. Failure payloads are how
+# upstream rejections get diagnosed - the IMAGE_DIMENSION_EXCEEDED case was found
+# by reading the oversized image out of a failed request body.
+# Default: True
+LOG_FAILURE_BODY: bool = os.getenv("LOG_FAILURE_BODY", "true").lower() in ("1", "true", "yes")
+
+# Maximum stored size per body, in bytes. Longer bodies are truncated with a
+# marker appended, so one pathological request cannot write hundreds of MB.
+# Applies to whichever bodies are stored. Default: 64 KB
+MAX_LOGGED_BODY_BYTES: int = int(os.getenv("MAX_LOGGED_BODY_BYTES", "65536"))
+
+# ==================================================================================================
 # First Token Timeout Settings (Streaming Retry)
 # ==================================================================================================
 

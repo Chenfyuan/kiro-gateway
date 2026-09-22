@@ -15,6 +15,12 @@ from typing import Dict, List, Optional
 
 from loguru import logger
 
+from .config import (
+    LOG_FAILURE_BODY,
+    LOG_SUCCESS_BODY,
+    MAX_LOGGED_BODY_BYTES,
+)
+
 
 class RequestLogger:
     """Records and queries request logs."""
@@ -79,6 +85,29 @@ class RequestLogger:
 
         logger.info("RequestLogger initialized")
 
+    @staticmethod
+    def _body_for_storage(body: str, status: str) -> str:
+        """Decide what of a body actually gets stored.
+
+        Bodies are the only large thing in this table - a stat row is under 100
+        bytes, its bodies average 200+ KB. Storing them for every successful call
+        is what grows the database into the tens of gigabytes; dropping them costs
+        nothing statistically, because every column the per-user/per-day/per-model
+        reports read lives outside the body.
+
+        Failures keep their payload: that is the case where the bytes are the
+        evidence. What survives is capped either way, so a single pathological
+        request cannot write hundreds of megabytes.
+        """
+        if not body:
+            return ""
+        keep = LOG_FAILURE_BODY if status != "success" else LOG_SUCCESS_BODY
+        if not keep:
+            return ""
+        if len(body) <= MAX_LOGGED_BODY_BYTES:
+            return body
+        return body[:MAX_LOGGED_BODY_BYTES] + f"...[truncated, original {len(body)} chars]"
+
     async def record(
         self,
         model: str = "",
@@ -97,7 +126,14 @@ class RequestLogger:
         user_id: str = "",
         user_name: str = "",
     ) -> None:
-        """Record a request log entry."""
+        """Record a request log entry.
+
+        Statistics columns are always written. Bodies are filtered by
+        :meth:`_body_for_storage` - see LOG_SUCCESS_BODY in config.
+        """
+        request_body = self._body_for_storage(request_body, status)
+        response_body = self._body_for_storage(response_body, status)
+
         async with self._lock:
             try:
                 self._conn.execute(

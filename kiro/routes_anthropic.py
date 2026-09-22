@@ -369,6 +369,33 @@ async def messages(
         last_error_message = None
         last_error_status = None
         tried_accounts = set()  # Track tried accounts in current failover loop
+
+        async def _log_failure(status_code: int, message: str) -> None:
+            """Write a request_logs row for a request that never succeeded.
+
+            /v1/messages is the busiest path in production, and until this existed
+            a failed call wrote nothing at all - record() was only ever reached
+            after a success. An outage therefore left the dashboard looking idle
+            while clients saw errors. Only the final outcome is logged, so one
+            client request stays one row however many accounts were tried.
+            """
+            rl = getattr(request.app.state, "request_logger", None)
+            if rl is None:
+                return
+            try:
+                await rl.record(
+                    model=request_data.model,
+                    api_type="anthropic",
+                    streaming=bool(request_data.stream),
+                    status="error",
+                    status_code=status_code,
+                    duration_ms=int((_time.time() - _req_start_time) * 1000),
+                    error_message=(message or "")[:2000],
+                    request_body=json.dumps(request_data.model_dump(), ensure_ascii=False),
+                    **caller_of(request),
+                )
+            except Exception as log_err:  # logging must never mask the real error
+                logger.warning(f"Failed to log failed request: {log_err}")
         
         for attempt in range(MAX_ATTEMPTS):
             # Get next available account (excluding already tried)
@@ -381,6 +408,8 @@ async def messages(
                 # All accounts unavailable
                 if len(all_accounts) == 1:
                     # Single account - return original error with original status code
+                    await _log_failure(last_error_status or 503,
+                                       last_error_message or "Account unavailable")
                     return JSONResponse(
                         status_code=last_error_status or 503,
                         content={
@@ -396,6 +425,7 @@ async def messages(
                     detail = "No available accounts for this model."
                     if last_error_message:
                         detail += f" Error from last account: {last_error_message}"
+                    await _log_failure(503, detail)
                     return JSONResponse(
                         status_code=503,
                         content={
@@ -735,6 +765,7 @@ async def messages(
         if len(all_accounts) == 1:
             # Single account - return its original error
             # last_error_status and last_error_message are guaranteed to be set
+            await _log_failure(last_error_status, last_error_message)
             return JSONResponse(
                 status_code=last_error_status,
                 content={
@@ -750,6 +781,7 @@ async def messages(
             detail = "All accounts failed after full circle."
             if last_error_message:
                 detail += f" Error from last account: {last_error_message}"
+            await _log_failure(503, detail)
             return JSONResponse(
                 status_code=503,
                 content={
