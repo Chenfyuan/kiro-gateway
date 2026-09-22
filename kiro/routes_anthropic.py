@@ -689,7 +689,11 @@ async def messages(
                         
                         if debug_logger:
                             debug_logger.flush_on_error(response.status_code, last_error_message)
-                        
+
+                        # FATAL 上游错误直接透传给客户端，不会走到循环外的
+                        # "all attempts exhausted" 分支，因此循环外的 _log_failure
+                        # 覆盖不到这里。显式补一次埋点，否则仪表盘会看到"零失败"。
+                        await _log_failure(response.status_code, last_error_message)
                         return JSONResponse(
                             status_code=response.status_code,
                             content={
@@ -742,6 +746,9 @@ async def messages(
                 logger.error(f"HTTP {e.status_code} - POST /v1/messages - {e.detail}")
                 if debug_logger:
                     debug_logger.flush_on_error(e.status_code, str(e.detail))
+                # 直接 raise 出去后 FastAPI 会自动生成响应，跳过循环外的 _log_failure，
+                # 所以这条失败在这里落库。
+                await _log_failure(e.status_code, str(e.detail))
                 raise
             except Exception as e:
                 await http_client.close()
@@ -749,7 +756,10 @@ async def messages(
                 logger.error(f"HTTP 500 - POST /v1/messages - {str(e)[:100]}")
                 if debug_logger:
                     debug_logger.flush_on_error(500, str(e))
-                
+
+                # 500 是最少见但最需要埋点的失败：既没有上游 status_code，也没有
+                # 用户报文特征，仪表盘上如果不落库排障基本靠翻容器日志。
+                await _log_failure(500, str(e))
                 return JSONResponse(
                     status_code=500,
                     content={
