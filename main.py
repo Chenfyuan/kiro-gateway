@@ -530,6 +530,14 @@ async def lifespan(app: FastAPI):
     app.state.proxy_key_store = ProxyKeyStore(db_path="data/token_usage.db")
     await app.state.proxy_key_store.init_db()
 
+    # Initialize the model pricing store. It is module-level state (a small
+    # in-memory dict fronting a table in the same SQLite file), because
+    # get_cost() is called from the hot per-request logging path and can't
+    # take a DB round-trip per call. Sync init is fine - the table is tiny
+    # and only read at write-time refreshes thereafter.
+    from kiro.model_pricing import init_pricing_store
+    init_pricing_store(db_path="data/token_usage.db")
+
     yield
 
     # Graceful shutdown

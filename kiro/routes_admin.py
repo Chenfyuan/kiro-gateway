@@ -676,6 +676,69 @@ async def delete_proxy_key(request: Request, user_id: str, authorization: str = 
     return {"status": "ok", "user_id": user_id}
 
 
+# ─── Model Pricing Endpoints ────────────────────────────────────────────────
+# Runtime pricing overrides. Ships with a hardcoded DEFAULT_PRICING covering
+# the models that existed at first release; new model names appear as
+# ``source: default`` if they hit the partial-match rule, otherwise as $0.00
+# in the report. The admin UI on the per-user usage page lets an operator
+# add rates for those (and override existing ones). Writes are picked up on
+# the next request without a restart - see kiro.model_pricing for details.
+
+class UpsertModelPricingRequest(BaseModel):
+    model: str = Field(..., min_length=1, description="Model identifier as it appears in requests")
+    input_price: float = Field(..., ge=0, description="USD per 1M input tokens")
+    output_price: float = Field(..., ge=0, description="USD per 1M output tokens")
+    currency: str = Field("USD", description="Always USD in the current build; the field exists so a future CNY layer can be added without breaking the wire format.")
+
+
+@router.get("/model-pricing")
+async def list_model_pricing(authorization: str = Header(None)):
+    """Return every override plus the built-in defaults not shadowed by one."""
+    _verify_admin_auth(authorization)
+    from kiro.model_pricing import list_pricing
+    return {"data": list_pricing()}
+
+
+@router.post("/model-pricing")
+async def upsert_model_pricing(payload: UpsertModelPricingRequest,
+                               authorization: str = Header(None)):
+    """Create or update the rate for one model.
+
+    Re-posting the same model name replaces the row (there is at most one
+    entry per model, matching how the report engine looks it up).
+    """
+    _verify_admin_auth(authorization)
+    from kiro.model_pricing import upsert_pricing
+    try:
+        result = upsert_pricing(
+            payload.model, payload.input_price,
+            payload.output_price, payload.currency,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"status": "ok", **result}
+
+
+@router.delete("/model-pricing/{model:path}")
+async def delete_model_pricing(model: str, authorization: str = Header(None)):
+    """Remove an override; get_cost falls back to DEFAULT_PRICING for that model.
+
+    ``:path`` converter so model names with slashes (unusual but not forbidden
+    by the request path) still route correctly.
+    """
+    _verify_admin_auth(authorization)
+    from kiro.model_pricing import delete_pricing
+    try:
+        removed = delete_pricing(model)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"No override for model: {model}")
+    return {"status": "ok", "model": model}
+
+
 # ─── Request Logs Endpoints ─────────────────────────────────────────────────
 
 @router.get("/logs")
