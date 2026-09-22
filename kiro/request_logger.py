@@ -20,7 +20,7 @@ from .config import (
     LOG_SUCCESS_BODY,
     MAX_LOGGED_BODY_BYTES,
 )
-from .model_pricing import get_cost
+from .model_pricing import get_cost, has_pricing
 
 
 class RequestLogger:
@@ -249,7 +249,7 @@ class RequestLogger:
     _MODEL_BUCKET = "COALESCE(NULLIF(model, ''), '(unknown)')"
 
     def _cost_by_group(self, since: str, group_exprs: List[str],
-                       user_id: str = "") -> Dict[tuple, float]:
+                       user_id: str = "") -> Dict[tuple, Dict[str, float]]:
         """Cost per group, priced per model then summed.
 
         group_exprs are raw SQL expressions to group by (the user bucket, plus
@@ -259,6 +259,10 @@ class RequestLogger:
 
         The expressions are aliased only in the SELECT list - SQLite rejects an
         alias inside GROUP BY - so the two clauses are built separately.
+
+        Each entry also reports unpriced_tokens: tokens spent on models with no
+        configured rate. Those contribute 0 to cost, so without this the report
+        would show real traffic as free and quietly understate the total.
         """
         select_list = ", ".join(f"{expr} AS g{i}" for i, expr in enumerate(group_exprs))
         group_list = ", ".join(group_exprs)
@@ -274,10 +278,13 @@ class RequestLogger:
             params.append(user_id)
         sql += f" GROUP BY {group_list}, {self._MODEL_BUCKET}"
 
-        costs: Dict[tuple, float] = {}
+        costs: Dict[tuple, Dict[str, float]] = {}
         for row in self._conn.execute(sql, tuple(params)).fetchall():
             keys = tuple(row[f"g{i}"] for i in range(len(group_exprs)))
-            costs[keys] = costs.get(keys, 0.0) + get_cost(row["_model"], row["pt"], row["ct"])
+            entry = costs.setdefault(keys, {"cost_usd": 0.0, "unpriced_tokens": 0})
+            entry["cost_usd"] += get_cost(row["_model"], row["pt"], row["ct"])
+            if not has_pricing(row["_model"]):
+                entry["unpriced_tokens"] += row["pt"] + row["ct"]
         return costs
 
     async def get_user_usage(self, days: int = 30) -> List[dict]:
@@ -304,7 +311,9 @@ class RequestLogger:
         result = []
         for r in rows:
             item = dict(r)
-            item["cost_usd"] = round(costs.get((item["user_id"],), 0.0), 4)
+            c = costs.get((item["user_id"],), {})
+            item["cost_usd"] = round(c.get("cost_usd", 0.0), 4)
+            item["unpriced_tokens"] = int(c.get("unpriced_tokens", 0))
             result.append(item)
         return result
 
@@ -337,7 +346,9 @@ class RequestLogger:
         result = []
         for r in rows:
             item = dict(r)
-            item["cost_usd"] = round(costs.get((item["date"], item["user_id"]), 0.0), 4)
+            c = costs.get((item["date"], item["user_id"]), {})
+            item["cost_usd"] = round(c.get("cost_usd", 0.0), 4)
+            item["unpriced_tokens"] = int(c.get("unpriced_tokens", 0))
             result.append(item)
         return result
 
@@ -367,7 +378,8 @@ class RequestLogger:
         # Already grouped by model, so each row prices on its own - no helper needed
         return [
             {**dict(r),
-             "cost_usd": round(get_cost(r["model"], r["prompt_tokens"], r["completion_tokens"]), 4)}
+             "cost_usd": round(get_cost(r["model"], r["prompt_tokens"], r["completion_tokens"]), 4),
+             "priced": has_pricing(r["model"])}
             for r in rows
         ]
 

@@ -283,3 +283,80 @@ class TestPerUserCost:
         assert await rlogger.get_user_usage(days=30) == []
         assert await rlogger.get_user_daily_usage(days=30) == []
         assert await rlogger.get_user_model_usage(days=30) == []
+
+
+class TestUnpricedModels:
+    """Distinguishing "costs nothing" from "we have no rate for this".
+
+    get_cost returns 0.0 for an unknown model, so a cost column alone renders
+    real traffic as free. Newly released names (claude-opus-5, claude-haiku-4.5)
+    sit in that hole until the pricing table is updated, which is exactly when a
+    usage report is most likely to be trusted and wrong.
+    """
+
+    UNPRICED = "claude-opus-5"
+    PRICED = "claude-opus-4"
+
+    @pytest.mark.asyncio
+    async def test_unpriced_tokens_are_reported(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.UNPRICED, prompt_tokens=500_000,
+                             completion_tokens=100_000, user_id="u1", user_name="Alice")
+
+        row = (await rlogger.get_user_usage(days=30))[0]
+        assert row["cost_usd"] == 0.0
+        # The cost is 0 only because no rate exists - say so instead of implying free
+        assert row["unpriced_tokens"] == 600_000
+
+    @pytest.mark.asyncio
+    async def test_priced_traffic_reports_no_unpriced_tokens(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.PRICED, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+
+        row = (await rlogger.get_user_usage(days=30))[0]
+        assert row["cost_usd"] == pytest.approx(15.0)
+        assert row["unpriced_tokens"] == 0
+
+    @pytest.mark.asyncio
+    async def test_mixed_priced_and_unpriced_keeps_both_figures(self, tmp_path):
+        """A partially-priced user must keep the cost it does have, plus the gap."""
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.PRICED, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model=self.UNPRICED, prompt_tokens=7_000, completion_tokens=3_000,
+                             user_id="u1", user_name="Alice")
+
+        row = (await rlogger.get_user_usage(days=30))[0]
+        assert row["cost_usd"] == pytest.approx(15.0)
+        assert row["unpriced_tokens"] == 10_000
+
+    @pytest.mark.asyncio
+    async def test_daily_rows_carry_unpriced_tokens(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.UNPRICED, prompt_tokens=4_000, completion_tokens=1_000,
+                             user_id="u1", user_name="Alice")
+
+        row = (await rlogger.get_user_daily_usage(days=30))[0]
+        assert row["unpriced_tokens"] == 5_000
+
+    @pytest.mark.asyncio
+    async def test_model_rows_flag_whether_they_are_priced(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.PRICED, prompt_tokens=1_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model=self.UNPRICED, prompt_tokens=1_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+
+        by_model = {r["model"]: r for r in await rlogger.get_user_model_usage(days=30)}
+        assert by_model[self.PRICED]["priced"] is True
+        assert by_model[self.UNPRICED]["priced"] is False
+
+    def test_partial_match_still_counts_as_priced(self):
+        """Dotted variants resolve to the base rate and must not be flagged unpriced."""
+        from kiro.model_pricing import has_pricing
+
+        assert has_pricing("claude-opus-4.6") is True
+        assert has_pricing("claude-sonnet-4-6") is True
+        assert has_pricing("claude-opus-5") is False
+        assert has_pricing("totally-made-up-model") is False

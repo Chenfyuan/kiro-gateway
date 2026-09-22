@@ -39,6 +39,30 @@ def _load_pricing() -> dict:
 MODEL_PRICING = _load_pricing()
 
 
+def _lookup_pricing(model: str) -> Optional[dict]:
+    """Return the rate entry for a model, or None when none is configured.
+
+    Kept separate from get_cost so callers can tell "this model costs nothing"
+    apart from "we have no rate for this model" - get_cost returns 0.0 for both,
+    and a report that renders the second as $0.00 tells the reader the traffic
+    was free. Every new model name (claude-opus-5, claude-haiku-4.5, ...) lands
+    in that hole until DEFAULT_PRICING or MODEL_PRICING_FILE is updated.
+    """
+    pricing = MODEL_PRICING.get(model)
+    if pricing:
+        return pricing
+    # Partial match, e.g. "claude-opus-4.6" falls back to the "claude-opus-4" rate
+    for key, val in MODEL_PRICING.items():
+        if key in model or model in key:
+            return val
+    return None
+
+
+def has_pricing(model: str) -> bool:
+    """Whether a rate is configured for this model (directly or by partial match)."""
+    return _lookup_pricing(model) is not None
+
+
 def get_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
     """
     Calculate cost in USD for given token usage.
@@ -51,13 +75,7 @@ def get_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
     Returns:
         Estimated cost in USD
     """
-    pricing = MODEL_PRICING.get(model)
-    if not pricing:
-        # Try partial match (e.g., "claude-opus-4" matches "claude-opus-4-20250514")
-        for key, val in MODEL_PRICING.items():
-            if key in model or model in key:
-                pricing = val
-                break
+    pricing = _lookup_pricing(model)
     if not pricing:
         return 0.0
 
