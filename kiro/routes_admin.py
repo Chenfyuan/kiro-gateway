@@ -618,7 +618,22 @@ def _require_key_store(request: Request):
 
 
 class UpsertProxyKeyRequest(BaseModel):
-    api_key: str = Field(..., min_length=8, description="Key value the client will send")
+    """Payload for issuing or rotating a per-user key.
+
+    ``api_key`` is optional. When omitted, the gateway generates one — this
+    is the recommended path from the ai-console UI, because it keeps the
+    plaintext-generation logic in exactly one place (here). The response
+    carries the plaintext back so the admin can display it once to the user.
+
+    When supplied by the caller (legacy path), it is trusted as-is; the store
+    hashes/masks it downstream and the plaintext is never returned by list()
+    or resolve(), matching the pre-existing invariant.
+    """
+
+    api_key: Optional[str] = Field(
+        default=None, min_length=8,
+        description="Key value; leave empty to let the server generate one",
+    )
     user_id: str = Field(..., min_length=1, description="ai-console user id")
     user_name: str = Field("", description="Display name for reports")
     enabled: bool = Field(True)
@@ -635,24 +650,37 @@ async def list_proxy_keys(request: Request, authorization: str = Header(None)):
 @router.post("/proxy-keys")
 async def upsert_proxy_key(request: Request, payload: UpsertProxyKeyRequest,
                           authorization: str = Header(None)):
-    """
-    Create or rotate the key for one user.
+    """Create or rotate the key for one user.
 
     Re-posting for an existing user_id replaces that user's key rather than
     adding a second one, so the one-key-per-user rule cannot be bypassed.
+
+    Response includes the plaintext ``api_key`` — the ONLY point it leaves
+    the gateway, and only in reply to a successful issue/rotate. list_keys
+    and resolve never disclose it. Callers must show it to the human once
+    and discard.
     """
     _verify_admin_auth(authorization)
     store = _require_key_store(request)
+    # Generate server-side by default. Keeping the algorithm here means
+    # ai-console never needs a secure-random dependency and stays pure UI.
+    api_key = payload.api_key or _generate_api_key()
     try:
-        result = await store.upsert(payload.api_key, payload.user_id,
-                                   payload.user_name, payload.enabled)
+        result = await store.upsert(api_key, payload.user_id,
+                                    payload.user_name, payload.enabled)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         # A duplicate api_key (same value already bound to another user) lands here.
         logger.warning(f"Failed to upsert proxy key for {payload.user_id}: {e}")
         raise HTTPException(status_code=409, detail="API key already in use by another user")
-    return {"status": "ok", **result}
+    return {"status": "ok", "api_key": api_key, **result}
+
+
+def _generate_api_key() -> str:
+    """Return a fresh 43-char urlsafe base64 token (32 bytes of entropy)."""
+    import base64, secrets
+    return "sk-" + base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
 
 
 @router.patch("/proxy-keys/{user_id}")
@@ -674,6 +702,27 @@ async def delete_proxy_key(request: Request, user_id: str, authorization: str = 
     if not await store.delete(user_id):
         raise HTTPException(status_code=404, detail=f"No key for user: {user_id}")
     return {"status": "ok", "user_id": user_id}
+
+
+
+
+@router.get("/models")
+async def list_available_models(request: Request, authorization: str = Header(None)):
+    """List every model the gateway can route to.
+
+    Same source of truth as /v1/models, only authenticated with the admin key
+    (proxy-services should be able to see the catalog without also needing a
+    per-user key). Useful for admin UIs that want to render a dropdown when
+    entering model prices, so nobody has to type ``claude-opus-5`` by hand
+    and get it slightly wrong.
+    """
+    _verify_admin_auth(authorization)
+    if request.app.state.account_system:
+        models = request.app.state.account_manager.get_all_available_models()
+    else:
+        account = request.app.state.account_manager.get_first_account()
+        models = account.model_resolver.get_available_models()
+    return {"data": sorted(models)}
 
 
 # ─── Model Pricing Endpoints ────────────────────────────────────────────────
