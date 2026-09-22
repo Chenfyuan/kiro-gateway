@@ -166,7 +166,57 @@ class KiroHttpClient:
                 # Log but don't propagate - we're in cleanup code
                 # Propagating here could mask the original exception
                 logger.warning(f"Error closing HTTP client: {e}")
-    
+
+    @staticmethod
+    async def _release_response(response: Optional[httpx.Response]) -> None:
+        """
+        Returns a response's connection to the pool. Safe to call with None.
+
+        A streamed response (stream=True) keeps its connection checked out of the
+        pool until it is closed - httpx cannot know the caller is done reading. So
+        every response we abandon mid-retry has to be released explicitly, or its
+        pool slot is gone for the lifetime of the process.
+
+        This is what took xiaomei down on 2026-09-21: retries on 403 (expired
+        tokens) discarded their responses without closing them, and because
+        request_with_retry sets "Connection: close" for streams, the server had
+        already sent FIN - so each leaked socket sat in CLOSE_WAIT holding a slot.
+        Exactly 100 of them accumulated against max_connections=100, after which
+        every new request blocked on pool acquisition and failed with PoolTimeout
+        after 30s. The pool never recovers on its own; only a restart clears it.
+
+        Failures here are swallowed deliberately: this runs on error paths where
+        the real error must not be masked by a cleanup problem.
+        """
+        if response is None:
+            return
+        try:
+            await response.aclose()
+        except Exception as e:
+            logger.debug(f"Error releasing response connection: {e}")
+
+    @staticmethod
+    async def _buffer_and_release(response: httpx.Response) -> None:
+        """
+        Reads a response's body into memory, then frees its pool connection.
+
+        For the 429/5xx responses handed back to the caller after retries are
+        exhausted. Those need a readable body, but a streamed response that is still
+        open owns a pool slot - so the stored response was competing for the pool
+        against the very attempts meant to supersede it. On a tight pool that is a
+        self-inflicted PoolTimeout: the retry cannot get a connection because the
+        previous failure is still holding one.
+
+        aread() buffers the content, after which aclose() releases the connection and
+        .text / .json() keep working. If the read fails the connection is released
+        anyway - a missing error body is a far smaller problem than a lost slot.
+        """
+        try:
+            await response.aread()
+        except Exception as e:
+            logger.debug(f"Could not buffer response body before release: {e}")
+        await KiroHttpClient._release_response(response)
+
     async def request_with_retry(
         self,
         method: str,
@@ -237,29 +287,43 @@ class KiroHttpClient:
                 # Check status
                 if response.status_code == 200:
                     return response
-                
+
                 # 403 - token expired, refresh and retry
                 if response.status_code == 403:
                     logger.warning(f"Received 403, refreshing token (attempt {attempt + 1}/{MAX_RETRIES})")
+                    # Release before retrying: with stream=True the connection stays
+                    # checked out of the pool until the response is closed, so a
+                    # discarded response holds its slot forever (see _release_response)
+                    await self._release_response(response)
                     await self.auth_manager.force_refresh()
                     continue
-                
+
                 # 429 - rate limit, wait and retry
                 if response.status_code == 429:
+                    # The caller still needs this response - it comes back after
+                    # exhaustion so the real status and error body stay visible - but
+                    # while it is open it owns a pool slot, competing against the very
+                    # retries meant to supersede it. Buffer the body, free the socket.
+                    await self._buffer_and_release(response)
+                    # Also release the one this replaces: repeated 429s would
+                    # otherwise strand every response but the last
+                    await self._release_response(last_response)
                     last_response = response  # Сохраняем для возврата после exhaustion
                     delay = BASE_RETRY_DELAY * (2 ** attempt)
                     logger.warning(f"Received 429, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
                     await asyncio.sleep(delay)
                     continue
-                
+
                 # 5xx - server error, wait and retry
                 if 500 <= response.status_code < 600:
+                    await self._buffer_and_release(response)
+                    await self._release_response(last_response)
                     last_response = response  # Сохраняем для возврата после exhaustion
                     delay = BASE_RETRY_DELAY * (2 ** attempt)
                     logger.warning(f"Received {response.status_code}, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
                     await asyncio.sleep(delay)
                     continue
-                
+
                 # Other errors - return as is
                 return response
                 

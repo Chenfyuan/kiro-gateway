@@ -52,6 +52,7 @@ class ErrorCategory(str, Enum):
     NETWORK_UNREACHABLE = "network_unreachable"
     TIMEOUT_CONNECT = "timeout_connect"
     TIMEOUT_READ = "timeout_read"
+    TIMEOUT_POOL = "timeout_pool"
     SSL_ERROR = "ssl_error"
     PROXY_ERROR = "proxy_error"
     TOO_MANY_REDIRECTS = "too_many_redirects"
@@ -339,6 +340,31 @@ def _classify_timeout_error(error: httpx.TimeoutException, technical_details: st
             suggested_http_code=504
         )
     
+    # PoolTimeout: no free connection in the pool. This is OUR problem, not the
+    # network's - the upstream was never even contacted. It used to fall through to
+    # the generic branch below, which blamed the user's connection and the server's
+    # load; during the 2026-09-21 outage that message sent the investigation after
+    # the network for far too long while the real cause was a leaked-connection pool
+    # sitting at its 100-connection ceiling. Worth its own category precisely because
+    # it points at the gateway itself.
+    if isinstance(error, httpx.PoolTimeout):
+        return NetworkErrorInfo(
+            category=ErrorCategory.TIMEOUT_POOL,
+            user_message=(
+                "Gateway connection pool exhausted - no free upstream connection. "
+                "This is a gateway-side limit, not an upstream failure."
+            ),
+            troubleshooting_steps=[
+                "Check for leaked connections: ss -tan | grep CLOSE-WAIT | wc -l",
+                "If that count is at the pool ceiling, connections are being leaked - restart clears it",
+                "Sustained high concurrency instead? Raise max_connections in main.py",
+                "Check the gateway logs for streamed responses that were never closed"
+            ],
+            technical_details=technical_details,
+            is_retryable=True,
+            suggested_http_code=503,  # Capacity problem on our side, not a gateway timeout
+        )
+
     # Generic timeout
     return NetworkErrorInfo(
         category=ErrorCategory.TIMEOUT_READ,
