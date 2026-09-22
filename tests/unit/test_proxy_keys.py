@@ -164,3 +164,122 @@ class TestCallerIdentity:
         monkeypatch.setattr(caller_identity, "get_proxy_api_key", lambda: "global-key")
         assert caller_identity.resolve_caller(None, "bogus") is None
         assert caller_identity.resolve_caller(None, None) is None
+
+
+class TestPerUserCost:
+    """cost_usd on the per-user reports.
+
+    Tokens alone cannot answer "what did this user cost"; only the gateway knows
+    the per-model rates, so the number has to be produced here rather than in the
+    console UI. The cases below pin the one thing that is easy to get wrong:
+    pricing has to happen per model, before any summing across models.
+    """
+
+    # claude-opus-4: $15/1M in, $75/1M out. claude-sonnet-4: $3/1M in, $15/1M out.
+    OPUS = "claude-opus-4"
+    SONNET = "claude-sonnet-4"
+
+    @pytest.mark.asyncio
+    async def test_single_model_cost(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.OPUS, prompt_tokens=1_000_000,
+                             completion_tokens=1_000_000, user_id="u1", user_name="Alice")
+
+        rows = await rlogger.get_user_usage(days=30)
+        assert rows[0]["cost_usd"] == pytest.approx(90.0)
+
+    @pytest.mark.asyncio
+    async def test_mixed_models_are_priced_separately(self, tmp_path):
+        """The whole reason cost is computed per (user, model) and then summed.
+
+        Summing tokens first and pricing the total would bill all 2M input tokens
+        at whichever model name matched first - $30 or $15 instead of the real $18.
+        """
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.OPUS, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model=self.SONNET, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+
+        rows = await rlogger.get_user_usage(days=30)
+        assert len(rows) == 1
+        assert rows[0]["cost_usd"] == pytest.approx(18.0)  # 15 + 3, not 30 and not 15
+
+    @pytest.mark.asyncio
+    async def test_cost_is_attributed_to_the_right_user(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.OPUS, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model=self.SONNET, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u2", user_name="Bob")
+
+        by_user = {r["user_id"]: r for r in await rlogger.get_user_usage(days=30)}
+        assert by_user["u1"]["cost_usd"] == pytest.approx(15.0)
+        assert by_user["u2"]["cost_usd"] == pytest.approx(3.0)
+
+    @pytest.mark.asyncio
+    async def test_daily_cost_is_per_day_and_per_model(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.OPUS, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model=self.SONNET, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+
+        rows = await rlogger.get_user_daily_usage(days=30)
+        assert len(rows) == 1  # same day
+        assert rows[0]["cost_usd"] == pytest.approx(18.0)
+
+    @pytest.mark.asyncio
+    async def test_model_rows_carry_their_own_cost(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.OPUS, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model=self.SONNET, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+
+        by_model = {r["model"]: r for r in await rlogger.get_user_model_usage(days=30)}
+        assert by_model[self.OPUS]["cost_usd"] == pytest.approx(15.0)
+        assert by_model[self.SONNET]["cost_usd"] == pytest.approx(3.0)
+
+    @pytest.mark.asyncio
+    async def test_daily_cost_filtered_to_one_user(self, tmp_path):
+        """The user_id filter must narrow the cost too, not just the token columns."""
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.OPUS, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u1", user_name="Alice")
+        await rlogger.record(model=self.OPUS, prompt_tokens=1_000_000, completion_tokens=0,
+                             user_id="u2", user_name="Bob")
+
+        rows = await rlogger.get_user_daily_usage(days=30, user_id="u1")
+        assert len(rows) == 1
+        assert rows[0]["user_id"] == "u1"
+        assert rows[0]["cost_usd"] == pytest.approx(15.0)
+
+    @pytest.mark.asyncio
+    async def test_unpriced_model_costs_zero_rather_than_failing(self, tmp_path):
+        """An unknown model name must not break the report or invent a price."""
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model="some-model-we-have-no-rate-for",
+                             prompt_tokens=5000, completion_tokens=5000,
+                             user_id="u1", user_name="Alice")
+
+        rows = await rlogger.get_user_usage(days=30)
+        assert rows[0]["total_tokens"] == 10000
+        assert rows[0]["cost_usd"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_unknown_bucket_still_gets_a_cost(self, tmp_path):
+        """Unattributed traffic costs real money; the bucket must show it."""
+        rlogger = await _rlogger(tmp_path)
+        await rlogger.record(model=self.OPUS, prompt_tokens=1_000_000, completion_tokens=0)
+
+        rows = await rlogger.get_user_usage(days=30)
+        assert rows[0]["user_id"] == "__unknown__"
+        assert rows[0]["cost_usd"] == pytest.approx(15.0)
+
+    @pytest.mark.asyncio
+    async def test_no_traffic_yields_no_rows(self, tmp_path):
+        rlogger = await _rlogger(tmp_path)
+        assert await rlogger.get_user_usage(days=30) == []
+        assert await rlogger.get_user_daily_usage(days=30) == []
+        assert await rlogger.get_user_model_usage(days=30) == []

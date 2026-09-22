@@ -20,6 +20,7 @@ from .config import (
     LOG_SUCCESS_BODY,
     MAX_LOGGED_BODY_BYTES,
 )
+from .model_pricing import get_cost
 
 
 class RequestLogger:
@@ -236,14 +237,56 @@ class RequestLogger:
     # request_logs carries the caller's identity. Rows written before the
     # user_id column existed are reported under the "unknown" bucket instead of
     # being attributed to someone.
+    #
+    # Every bucket also carries cost_usd. Cost is not a column: it comes from
+    # per-model rates in model_pricing, so it can only be summed per (bucket,
+    # model) and then totalled - summing tokens first and pricing the total
+    # would charge every model at whatever rate the string happened to match.
+    # The sibling /admin/usage endpoints already report cost, and a per-user
+    # report whose columns stop at tokens cannot answer "what did this cost".
+
+    _USER_BUCKET = "COALESCE(NULLIF(user_id, ''), '__unknown__')"
+    _MODEL_BUCKET = "COALESCE(NULLIF(model, ''), '(unknown)')"
+
+    def _cost_by_group(self, since: str, group_exprs: List[str],
+                       user_id: str = "") -> Dict[tuple, float]:
+        """Cost per group, priced per model then summed.
+
+        group_exprs are raw SQL expressions to group by (the user bucket, plus
+        DATE(timestamp) for the daily view); the model bucket is always appended
+        so each slice is priced at its own rate, then the models collapse into one
+        cost per group. Keys in the returned dict follow group_exprs order.
+
+        The expressions are aliased only in the SELECT list - SQLite rejects an
+        alias inside GROUP BY - so the two clauses are built separately.
+        """
+        select_list = ", ".join(f"{expr} AS g{i}" for i, expr in enumerate(group_exprs))
+        group_list = ", ".join(group_exprs)
+        sql = f"""SELECT {select_list},
+                         {self._MODEL_BUCKET} AS _model,
+                         COALESCE(SUM(prompt_tokens), 0) AS pt,
+                         COALESCE(SUM(completion_tokens), 0) AS ct
+                  FROM request_logs
+                  WHERE timestamp >= ?"""
+        params: list = [since]
+        if user_id:
+            sql += f" AND {self._USER_BUCKET} = ?"
+            params.append(user_id)
+        sql += f" GROUP BY {group_list}, {self._MODEL_BUCKET}"
+
+        costs: Dict[tuple, float] = {}
+        for row in self._conn.execute(sql, tuple(params)).fetchall():
+            keys = tuple(row[f"g{i}"] for i in range(len(group_exprs)))
+            costs[keys] = costs.get(keys, 0.0) + get_cost(row["_model"], row["pt"], row["ct"])
+        return costs
 
     async def get_user_usage(self, days: int = 30) -> List[dict]:
-        """Total tokens and requests per user, highest usage first."""
+        """Total tokens, requests and cost per user, highest usage first."""
         since = (datetime.utcnow() - timedelta(days=days)).isoformat()
         async with self._lock:
             rows = self._conn.execute(
-                """SELECT
-                    COALESCE(NULLIF(user_id, ''), '__unknown__') AS user_id,
+                f"""SELECT
+                    {self._USER_BUCKET} AS user_id,
                     COALESCE(NULLIF(MAX(user_name), ''), '未知（无身份记录）') AS user_name,
                     COUNT(*) AS requests,
                     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
@@ -252,18 +295,25 @@ class RequestLogger:
                     COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens
                    FROM request_logs
                    WHERE timestamp >= ?
-                   GROUP BY COALESCE(NULLIF(user_id, ''), '__unknown__')
+                   GROUP BY {self._USER_BUCKET}
                    ORDER BY total_tokens DESC""",
                 (since,),
             ).fetchall()
-        return [dict(r) for r in rows]
+            costs = self._cost_by_group(since, [self._USER_BUCKET])
+
+        result = []
+        for r in rows:
+            item = dict(r)
+            item["cost_usd"] = round(costs.get((item["user_id"],), 0.0), 4)
+            result.append(item)
+        return result
 
     async def get_user_daily_usage(self, days: int = 30, user_id: str = "") -> List[dict]:
-        """Per-day token totals, optionally narrowed to one user."""
+        """Per-day token totals and cost, optionally narrowed to one user."""
         since = (datetime.utcnow() - timedelta(days=days)).isoformat()
-        sql = """SELECT
+        sql = f"""SELECT
                     DATE(timestamp) AS date,
-                    COALESCE(NULLIF(user_id, ''), '__unknown__') AS user_id,
+                    {self._USER_BUCKET} AS user_id,
                     COALESCE(NULLIF(MAX(user_name), ''), '未知（无身份记录）') AS user_name,
                     COUNT(*) AS requests,
                     COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
@@ -273,22 +323,31 @@ class RequestLogger:
                  WHERE timestamp >= ?"""
         params: list = [since]
         if user_id:
-            sql += " AND COALESCE(NULLIF(user_id, ''), '__unknown__') = ?"
+            sql += f" AND {self._USER_BUCKET} = ?"
             params.append(user_id)
-        sql += """ GROUP BY DATE(timestamp), COALESCE(NULLIF(user_id, ''), '__unknown__')
-                   ORDER BY date ASC"""
+        sql += f""" GROUP BY DATE(timestamp), {self._USER_BUCKET}
+                    ORDER BY date ASC"""
 
         async with self._lock:
             rows = self._conn.execute(sql, tuple(params)).fetchall()
-        return [dict(r) for r in rows]
+            costs = self._cost_by_group(
+                since, ["DATE(timestamp)", self._USER_BUCKET], user_id
+            )
+
+        result = []
+        for r in rows:
+            item = dict(r)
+            item["cost_usd"] = round(costs.get((item["date"], item["user_id"]), 0.0), 4)
+            result.append(item)
+        return result
 
     async def get_user_model_usage(self, days: int = 30, user_id: str = "") -> List[dict]:
-        """Per-model token totals, optionally narrowed to one user."""
+        """Per-model token totals and cost, optionally narrowed to one user."""
         since = (datetime.utcnow() - timedelta(days=days)).isoformat()
-        sql = """SELECT
-                    COALESCE(NULLIF(user_id, ''), '__unknown__') AS user_id,
+        sql = f"""SELECT
+                    {self._USER_BUCKET} AS user_id,
                     COALESCE(NULLIF(MAX(user_name), ''), '未知（无身份记录）') AS user_name,
-                    COALESCE(NULLIF(model, ''), '(unknown)') AS model,
+                    {self._MODEL_BUCKET} AS model,
                     COUNT(*) AS requests,
                     COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
                     COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
@@ -297,15 +356,20 @@ class RequestLogger:
                  WHERE timestamp >= ?"""
         params: list = [since]
         if user_id:
-            sql += " AND COALESCE(NULLIF(user_id, ''), '__unknown__') = ?"
+            sql += f" AND {self._USER_BUCKET} = ?"
             params.append(user_id)
-        sql += """ GROUP BY COALESCE(NULLIF(user_id, ''), '__unknown__'),
-                            COALESCE(NULLIF(model, ''), '(unknown)')
-                   ORDER BY total_tokens DESC"""
+        sql += f""" GROUP BY {self._USER_BUCKET}, {self._MODEL_BUCKET}
+                    ORDER BY total_tokens DESC"""
 
         async with self._lock:
             rows = self._conn.execute(sql, tuple(params)).fetchall()
-        return [dict(r) for r in rows]
+
+        # Already grouped by model, so each row prices on its own - no helper needed
+        return [
+            {**dict(r),
+             "cost_usd": round(get_cost(r["model"], r["prompt_tokens"], r["completion_tokens"]), 4)}
+            for r in rows
+        ]
 
     async def close(self) -> None:
         """Close database connection."""
