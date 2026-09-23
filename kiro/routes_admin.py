@@ -111,60 +111,6 @@ async def refresh_account_quota(request: Request, account_id: str, authorization
     return {"status": "ok", "account": account_manager.get_account_info(account_id)}
 
 
-@router.get("/accounts/{account_id:path}")
-async def get_account(request: Request, account_id: str, authorization: str = Header(None)):
-    _verify_admin_auth(authorization)
-    account_manager = request.app.state.account_manager
-    info = account_manager.get_account_info(account_id)
-    if not info:
-        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
-    return info
-
-
-@router.post("/accounts")
-async def add_account(request: Request, body: AddAccountRequest, authorization: str = Header(None)):
-    _verify_admin_auth(authorization)
-    account_manager = request.app.state.account_manager
-
-    if body.type == "kiro_export":
-        if not body.data:
-            raise HTTPException(status_code=400, detail="'data' field required for kiro_export type")
-        creds = _parse_kiro_export(body.data)
-    elif body.type == "json":
-        if not body.credentials:
-            raise HTTPException(status_code=400, detail="'credentials' field required for json type")
-        creds = body.credentials
-    else:
-        raise HTTPException(status_code=400, detail=f"Unsupported type: {body.type}. Use 'json' or 'kiro_export'")
-
-    if not creds.get("refreshToken"):
-        raise HTTPException(status_code=400, detail="credentials must contain 'refreshToken'")
-
-    try:
-        account_id = await account_manager.add_account(creds)
-        info = account_manager.get_account_info(account_id)
-        return {"status": "ok", "account_id": account_id, "account": info}
-    except Exception as e:
-        logger.error(f"Failed to add account: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.patch("/accounts/{account_id:path}")
-async def update_account(request: Request, account_id: str, body: UpdateAccountRequest, authorization: str = Header(None)):
-    _verify_admin_auth(authorization)
-    account_manager = request.app.state.account_manager
-
-    if body.disabled is not None:
-        ok = await account_manager.set_account_disabled(account_id, body.disabled)
-        if not ok:
-            raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
-
-    info = account_manager.get_account_info(account_id)
-    if not info:
-        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
-    return {"status": "ok", "account": info}
-
-
 @router.get("/accounts/{account_id:path}/export")
 async def export_account(request: Request, account_id: str, authorization: str = Header(None)):
     """Export one account's credentials as a JSON blob.
@@ -223,6 +169,60 @@ async def export_account(request: Request, account_id: str, authorization: str =
         raise HTTPException(status_code=500, detail="No refresh token available; account cannot be exported")
 
     return payload
+
+
+@router.get("/accounts/{account_id:path}")
+async def get_account(request: Request, account_id: str, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+    info = account_manager.get_account_info(account_id)
+    if not info:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+    return info
+
+
+@router.post("/accounts")
+async def add_account(request: Request, body: AddAccountRequest, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+
+    if body.type == "kiro_export":
+        if not body.data:
+            raise HTTPException(status_code=400, detail="'data' field required for kiro_export type")
+        creds = _parse_kiro_export(body.data)
+    elif body.type == "json":
+        if not body.credentials:
+            raise HTTPException(status_code=400, detail="'credentials' field required for json type")
+        creds = body.credentials
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported type: {body.type}. Use 'json' or 'kiro_export'")
+
+    if not creds.get("refreshToken"):
+        raise HTTPException(status_code=400, detail="credentials must contain 'refreshToken'")
+
+    try:
+        account_id = await account_manager.add_account(creds)
+        info = account_manager.get_account_info(account_id)
+        return {"status": "ok", "account_id": account_id, "account": info}
+    except Exception as e:
+        logger.error(f"Failed to add account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/accounts/{account_id:path}")
+async def update_account(request: Request, account_id: str, body: UpdateAccountRequest, authorization: str = Header(None)):
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+
+    if body.disabled is not None:
+        ok = await account_manager.set_account_disabled(account_id, body.disabled)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+
+    info = account_manager.get_account_info(account_id)
+    if not info:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+    return {"status": "ok", "account": info}
 
 
 @router.post("/accounts/{account_id:path}/reset-circuit")
