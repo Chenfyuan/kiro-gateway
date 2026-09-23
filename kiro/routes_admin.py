@@ -165,6 +165,66 @@ async def update_account(request: Request, account_id: str, body: UpdateAccountR
     return {"status": "ok", "account": info}
 
 
+@router.get("/accounts/{account_id:path}/export")
+async def export_account(request: Request, account_id: str, authorization: str = Header(None)):
+    """Export one account's credentials as a JSON blob.
+
+    The response body is a plain JSON object matching the `type=json` shape of
+    POST /accounts — refresh_token, profile_arn, region, expires_at etc — so an
+    operator can back a gateway up and reimport into another gateway in one
+    click. Only fields present on the auth manager are emitted; keys missing
+    from the source are omitted (not written as null).
+
+    ⚠️ The response contains plaintext credentials capable of using the
+    account's monthly quota. Bearer auth on this endpoint restricts it to
+    operators; the caller is responsible for not leaving the download around.
+    """
+    _verify_admin_auth(authorization)
+    account_manager = request.app.state.account_manager
+    account = account_manager._accounts.get(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+
+    if account.auth_manager is None:
+        # 兜底：懒加载以拿到 refresh token 等字段。init 失败就 502 —
+        # 大概率是这个凭证已经废了、导出也没意义。
+        success = await account_manager._initialize_account(account_id)
+        if not success or account.auth_manager is None:
+            raise HTTPException(status_code=502, detail="Account initialization failed; nothing to export")
+
+    am = account.auth_manager
+    payload: dict = {}
+    # 属性名是 auth manager 的内部 _foo；导出格式用 camelCase 与 POST /accounts
+    # 那份 credentials schema 对齐（见 auth.py: _load_credentials_from_file）。
+    if getattr(am, "_refresh_token", None):
+        payload["refreshToken"] = am._refresh_token
+    if getattr(am, "_access_token", None):
+        payload["accessToken"] = am._access_token
+    if getattr(am, "_profile_arn", None):
+        payload["profileArn"] = am._profile_arn
+    region = getattr(am, "_sso_region", None) or getattr(am, "_detected_api_region", None)
+    if region:
+        payload["region"] = region
+    if getattr(am, "_expires_at", None):
+        # datetime → ISO-8601（Z 结尾），跟 load 端支持的格式一致
+        exp = am._expires_at
+        try:
+            payload["expiresAt"] = exp.isoformat().replace("+00:00", "Z")
+        except Exception:
+            pass
+    if getattr(am, "_client_id", None):
+        payload["clientId"] = am._client_id
+    if getattr(am, "_client_secret", None):
+        payload["clientSecret"] = am._client_secret
+    if getattr(am, "_client_id_hash", None):
+        payload["clientIdHash"] = am._client_id_hash
+
+    if "refreshToken" not in payload:
+        raise HTTPException(status_code=500, detail="No refresh token available; account cannot be exported")
+
+    return payload
+
+
 @router.post("/accounts/{account_id:path}/reset-circuit")
 async def reset_circuit_breaker(request: Request, account_id: str, authorization: str = Header(None)):
     """Reset circuit breaker for an account (clear failures and cooldown)."""
