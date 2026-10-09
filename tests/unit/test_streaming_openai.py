@@ -1117,6 +1117,73 @@ class TestCollectStreamResponse:
         assert result["object"] == "chat.completion"
         print("✓ Object is chat.completion")
 
+    @pytest.mark.asyncio
+    async def test_merges_incremental_tool_call_deltas_by_index(
+        self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """Regression: 非流式必须按 OpenAI 规范把增量 tool_call 片段按 index 合并。
+
+        现象（修复前）：Kiro 把 tool_start + tool_input_delta × N 一条条 emit，
+        上游 stream_kiro_to_openai 原样把每片放进 chunk 的 tool_calls，老的非流式
+        聚合直接 .extend 把每片当独立 tool_call，结果 5 片 → 5 条 tool_calls，
+        且片段里只有 arguments，id/name 丢失。
+        """
+        async def mock_parse_kiro_stream(*args, **kwargs):
+            yield KiroEvent(type="tool_start", tool_start_data={
+                "id": "toolu_abc", "name": "skill_view",
+            })
+            yield KiroEvent(type="tool_input_delta", tool_input_delta='{"n')
+            yield KiroEvent(type="tool_input_delta", tool_input_delta='ame"')
+            yield KiroEvent(type="tool_input_delta", tool_input_delta=': "mx-im"}')
+            yield KiroEvent(type="tool_stop")
+
+        with patch('kiro.streaming_openai.parse_kiro_stream', mock_parse_kiro_stream):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                result = await collect_stream_response(
+                    mock_http_client, mock_response, "claude-opus-4.8",
+                    mock_model_cache, mock_auth_manager,
+                )
+
+        tcs = result["choices"][0]["message"]["tool_calls"]
+        assert len(tcs) == 1, f"expected 1 merged tool_call, got {len(tcs)}: {tcs}"
+        tc = tcs[0]
+        assert tc["id"] == "toolu_abc"
+        assert tc["function"]["name"] == "skill_view"
+        assert tc["function"]["arguments"] == '{"name": "mx-im"}'
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_repeated_tool_start_events(
+        self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """Regression: 上游偶尔对同一 tool_use 发两次 tool_start 事件时必须去重。
+
+        现象（修复前）：流式路径把两次都 yield，非流式聚合时第二次 start 变成
+        一个空 arguments 的新 tool_call 条目，让客户端看到看似工具调用了两次。
+        """
+        async def mock_parse_kiro_stream(*args, **kwargs):
+            yield KiroEvent(type="tool_start", tool_start_data={
+                "id": "toolu_abc", "name": "skill_view",
+            })
+            yield KiroEvent(type="tool_input_delta", tool_input_delta='{"name": "mx-im"}')
+            # 同一个 tool_use 的 start 重复一次（上游事件重放）
+            yield KiroEvent(type="tool_start", tool_start_data={
+                "id": "toolu_abc", "name": "skill_view",
+            })
+            yield KiroEvent(type="tool_stop")
+
+        with patch('kiro.streaming_openai.parse_kiro_stream', mock_parse_kiro_stream):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                result = await collect_stream_response(
+                    mock_http_client, mock_response, "claude-opus-4.8",
+                    mock_model_cache, mock_auth_manager,
+                )
+
+        tcs = result["choices"][0]["message"]["tool_calls"]
+        assert len(tcs) == 1, f"repeated tool_start should be deduplicated, got {tcs}"
+        assert tcs[0]["id"] == "toolu_abc"
+        assert tcs[0]["function"]["name"] == "skill_view"
+        assert tcs[0]["function"]["arguments"] == '{"name": "mx-im"}'
+
 
 # ==================================================================================================
 # Tests for error handling

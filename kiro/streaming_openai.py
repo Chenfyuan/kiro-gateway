@@ -129,7 +129,11 @@ async def stream_kiro_to_openai_internal(
     # Incremental tool call streaming state
     tool_call_index = 0
     has_streamed_tool_incrementally = False
-    
+    # 已经 emit 过的 tool_start id —— 用来给上游重复的 tool_start 事件去重。
+    # 偶发现象：Kiro 对同一 tool_use 会发送两次 start（可能是重连 / 事件重放），
+    # 老代码把两次都原样 yield，下游拼接工具调用参数时就会被重复开始截断。
+    emitted_tool_ids = set()
+
     try:
         # Use streaming_core.parse_kiro_stream for unified event parsing
         # This handles AWS SSE parsing, first token timeout, and thinking parser
@@ -267,6 +271,15 @@ async def stream_kiro_to_openai_internal(
                 tool_calls_from_stream.append(event.tool_use)
 
             elif event.type == "tool_start" and event.tool_start_data:
+                tool_id = event.tool_start_data["id"]
+                if tool_id and tool_id in emitted_tool_ids:
+                    # 同一个 tool_use 已经发过 start，跳过。只跳过本块的
+                    # "开始片段" emit —— 不动 tool_call_index 的推进（tool_stop
+                    # 还会把它 +1），也不动 has_streamed_tool_incrementally
+                    # （流式路径一旦有过 start，就一直走增量路径）。
+                    continue
+                if tool_id:
+                    emitted_tool_ids.add(tool_id)
                 has_streamed_tool_incrementally = True
                 # Emit OpenAI streaming chunk with tool call name
                 delta = {"tool_calls": [{
@@ -683,7 +696,31 @@ async def collect_stream_response(
             if "reasoning_content" in delta:
                 full_reasoning_content += delta["reasoning_content"]
             if "tool_calls" in delta:
-                tool_calls.extend(delta["tool_calls"])
+                # 按 OpenAI 规范按 index 合并增量：第一片带 id/name/type，
+                # 后续片只带 arguments 续写。直接 extend 会把参数片段当独立
+                # tool_call 塞进来，id/name 全空。
+                for piece in delta["tool_calls"]:
+                    idx = piece.get("index")
+                    if idx is None:
+                        # 没有 index 的片段只能当新 tool_call 处理（历史兼容）
+                        tool_calls.append(piece)
+                        continue
+                    while len(tool_calls) <= idx:
+                        tool_calls.append({
+                            "id": None,
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        })
+                    slot = tool_calls[idx]
+                    if piece.get("id"):
+                        slot["id"] = piece["id"]
+                    if piece.get("type"):
+                        slot["type"] = piece["type"]
+                    pf = piece.get("function") or {}
+                    if pf.get("name"):
+                        slot["function"]["name"] = pf["name"]
+                    if "arguments" in pf and pf["arguments"] is not None:
+                        slot["function"]["arguments"] += pf["arguments"]
             
             # Extract finish_reason from chunk (streaming already calculated it correctly)
             finish_reason_from_chunk = chunk_data.get("choices", [{}])[0].get("finish_reason")
