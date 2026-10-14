@@ -520,6 +520,10 @@ async def messages(
                             # the OpenAI route). Anthropic splits them: input_tokens
                             # on message_start, output_tokens on message_delta.
                             stream_usage = {}
+                            # 流里是否出现过 content / tool_use / thinking delta。配合 output_tokens==0
+                            # 识别"真·沉默响应"，上游 silent return 跟工具调用 response 都可能是 0 tokens，
+                            # 需要用 output 事件存在性去分辨。
+                            saw_any_output = False
                             try:
                                 async def make_retry_request():
                                     return await http_client.request_with_retry(
@@ -537,6 +541,14 @@ async def messages(
                                     request_system=system_for_tokenizer,
                                 ):
                                     _scrape_stream_usage(chunk, stream_usage)
+                                    # Anthropic 流典型 output 事件：content_block_delta 带
+                                    # text_delta / input_json_delta / thinking_delta。粗检关键字即可。
+                                    if not saw_any_output and chunk and (
+                                        'text_delta' in chunk
+                                        or 'input_json_delta' in chunk
+                                        or 'thinking_delta' in chunk
+                                    ):
+                                        saw_any_output = True
                                     yield chunk
                             except GeneratorExit:
                                 client_disconnected = True
@@ -583,7 +595,16 @@ async def messages(
                                         model=request_data.model,
                                         api_type="anthropic",
                                         streaming=True,
-                                        status="error" if streaming_error else "success",
+                                        status=(
+                                            "error" if streaming_error
+                                            # 同 openai：output_tokens==0 且没见过任何 delta
+                                            # 才算空响应。工具调用不计 output_tokens 的坑一样。
+                                            else "empty_response" if (
+                                                stream_usage.get("output_tokens", 0) == 0
+                                                and not saw_any_output
+                                            )
+                                            else "success"
+                                        ),
                                         duration_ms=int((_time.time() - _req_start_time) * 1000),
                                         prompt_tokens=stream_usage.get("input_tokens", 0),
                                         completion_tokens=stream_usage.get("output_tokens", 0),

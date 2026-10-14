@@ -485,7 +485,18 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                         model=request_data.model,
                                         api_type="openai",
                                         streaming=True,
-                                        status="error" if streaming_error else "success",
+                                        status=(
+                                            "error" if streaming_error
+                                            # 空响应：completion_tokens==0 且整条流没有过
+                                            # content / tool_calls / reasoning delta。Kiro 侧工具调用
+                                            # 不计 completion_tokens，所以必须叠加 saw_any_output
+                                            # 才能排除正常的工具调用响应被误判。
+                                            else "empty_response" if (
+                                                stream_usage.get("completion_tokens", 0) == 0
+                                                and not saw_any_output
+                                            )
+                                            else "success"
+                                        ),
                                         duration_ms=int((_time.time() - _req_start_time) * 1000),
                                         prompt_tokens=stream_usage.get("prompt_tokens", 0),
                                         completion_tokens=stream_usage.get("completion_tokens", 0),
