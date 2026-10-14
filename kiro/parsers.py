@@ -254,6 +254,8 @@ class AwsEventStreamParser:
         self.last_content: Optional[str] = None  # For deduplicating repeating content
         self.current_tool_call: Optional[Dict[str, Any]] = None
         self.tool_calls: List[Dict[str, Any]] = []
+        # 异常帧去重用（见 _scan_buffer_for_errors）
+        self._warned_fingerprints: set = set()
     
     def feed(self, chunk: bytes) -> List[Dict[str, Any]]:
         """
@@ -302,8 +304,50 @@ class AwsEventStreamParser:
                     events.append(event)
             except json.JSONDecodeError:
                 logger.warning(f"Failed to parse JSON: {json_str[:100]}")
-        
+
+        # 诊断：扫 buffer 里被跳过的 payload。Kiro 上游用 AWS Event Stream，
+        # 异常帧（ValidationException / ThrottlingException / 配额超限等）
+        # 的 payload 不匹配 EVENT_PATTERNS 的任何一条，老代码默默吞掉。
+        # 这是为什么流会出现 "completion_tokens=0 又没有错误"的根因之一。
+        # 这里仅打 WARN 不改变数据流，便于日后 docker logs | grep KiroStreamError 排查。
+        self._scan_buffer_for_errors()
+
         return events
+
+    # AWS Event Stream exception payload 的常见字段："message" / "__type" /
+    # "Message"。不同 AWS 服务偶尔还会带 "errorMessage" / "errorCode"。
+    # 这里的匹配只用来识别 "看起来是异常帧"的 payload，之后仍交给上层决定要不要抛错。
+    _ERROR_HINTS = (
+        'Exception":', 'ValidationException', 'ThrottlingException',
+        'AccessDeniedException', 'ResourceNotFoundException',
+        'ServiceUnavailableException', 'InternalServerException',
+        '"errorCode"', '"errorMessage"',
+    )
+
+    def _scan_buffer_for_errors(self) -> None:
+        """扫 buffer 里残留的、未被 EVENT_PATTERNS 吃到的 payload，发现异常帧就 WARN。
+
+        注意只扫，不消费 buffer —— 下一次 feed 还可能继续补完 payload，
+        同一帧可能被扫到多次；用 _warned_fingerprints 做轻量去重，避免刷屏。
+        """
+        if not self.buffer:
+            return
+        for hint in self._ERROR_HINTS:
+            idx = self.buffer.find(hint)
+            if idx == -1:
+                continue
+            # 取 hint 周围 ~200B 做日志样本（够看字段，不至于把一整个 payload 洗出来）
+            start = max(0, idx - 40)
+            end = min(len(self.buffer), idx + 200)
+            sample = self.buffer[start:end]
+            fingerprint = (hint, sample[:80])
+            if fingerprint in self._warned_fingerprints:
+                continue
+            self._warned_fingerprints.add(fingerprint)
+            logger.warning(
+                f"[KiroStreamError] 上游事件流里发现异常帧 hint={hint!r}, "
+                f"sample={sample!r}"
+            )
     
     def _process_event(self, data: dict, event_type: str) -> Optional[Dict[str, Any]]:
         """
