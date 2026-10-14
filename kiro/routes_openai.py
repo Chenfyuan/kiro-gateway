@@ -485,7 +485,14 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                         model=request_data.model,
                                         api_type="openai",
                                         streaming=True,
-                                        status="error" if streaming_error else "success",
+                                        status=(
+                                            "error" if streaming_error
+                                            # 空响应：上游返回 200 + stop + 0 completion token，
+                                            # 相当于 "沉默"。记一个独立 status，便于后续排查上游
+                                            # 对长 context / 大工具集的降级行为（参见 opus-5.5 偶发案例）。
+                                            else "empty_response" if (stream_usage.get("completion_tokens", 0) == 0)
+                                            else "success"
+                                        ),
                                         duration_ms=int((_time.time() - _req_start_time) * 1000),
                                         prompt_tokens=stream_usage.get("prompt_tokens", 0),
                                         completion_tokens=stream_usage.get("completion_tokens", 0),
