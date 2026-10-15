@@ -423,6 +423,10 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                             streaming_error = None
                             client_disconnected = False
                             stream_usage = {}
+                            # saw_any_output：是否至少见过一个 content/tool_calls/reasoning delta。
+                            # 必须在 try 之外初始化，不然 async for 还没进入第一次 yield
+                            # 就抛异常时，finally 读它会 NameError。见下方 "空响应" 判定。
+                            saw_any_output = False
                             try:
                                 async def make_retry_request():
                                     return await http_client.request_with_retry(
@@ -439,6 +443,14 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                     request_messages=messages_for_tokenizer,
                                     request_tools=tools_for_tokenizer
                                 ):
+                                    # saw_any_output: 粗检 "流里出现过真实输出"。tool_calls / content
+                                    # / reasoning_content 任一关键字出现即算，避免精细 json 解析开销。
+                                    if not saw_any_output and chunk and (
+                                        '"content"' in chunk
+                                        or '"tool_calls"' in chunk
+                                        or '"reasoning_content"' in chunk
+                                    ):
+                                        saw_any_output = True
                                     # Capture usage from final chunk
                                     if chunk and '"usage"' in chunk:
                                         try:
