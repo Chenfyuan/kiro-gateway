@@ -305,6 +305,13 @@ FALLBACK_MODELS: List[Dict[str, str]] = [
     {"modelId": "claude-opus-5"},
     {"modelId": "claude-sonnet-5"},
     {"modelId": "claude-fable-5"},
+    # OpenAI GPT 5.6 系列：2026-10-22 向上游 ListAvailableModels 实测返回（1M 上下文，
+    # rateMultiplier sol=4.4 / terra=2.2 / luna=0.6）。runtime.kiro.dev 端点不提供
+    # ListAvailableModels，网关只能用这份静态清单，不加这里 /v1/models 就不会列出它们
+    # （直接按名字调用是能通的，只是客户端的模型下拉里看不到）。
+    {"modelId": "gpt-5.6-sol"},
+    {"modelId": "gpt-5.6-terra"},
+    {"modelId": "gpt-5.6-luna"},
     {"modelId": "deepseek-3.2"},
     {"modelId": "glm-5"},
     {"modelId": "minimax-m2.1"},
