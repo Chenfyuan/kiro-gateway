@@ -38,6 +38,7 @@ from loguru import logger
 
 from kiro.config import get_proxy_api_key, PROFILE_ARN
 from kiro.caller_identity import resolve_caller, caller_of
+from kiro.attempt_trace import AttemptTrace
 from kiro.models_anthropic import (
     AnthropicMessagesRequest,
     AnthropicCountTokensRequest,
@@ -365,6 +366,7 @@ async def messages(
         account_manager = request.app.state.account_manager
         all_accounts = list(account_manager._accounts.keys())
         MAX_ATTEMPTS = len(all_accounts) * 2  # Full circle with margin
+        trace = AttemptTrace(request_data.model, MAX_ATTEMPTS)
         
         last_error_message = None
         last_error_status = None
@@ -399,13 +401,16 @@ async def messages(
         
         for attempt in range(MAX_ATTEMPTS):
             # Get next available account (excluding already tried)
+            trace.before_selection()
             account = await account_manager.get_next_account(
                 request_data.model,
                 exclude_accounts=tried_accounts
             )
+            trace.selected(account.id if account else None)
             
             if account is None:
                 # All accounts unavailable
+                trace.exhausted()
                 if len(all_accounts) == 1:
                     # Single account - return original error with original status code
                     await _log_failure(last_error_status or 503,
@@ -425,6 +430,7 @@ async def messages(
                     detail = "No available accounts for this model."
                     if last_error_message:
                         detail += f" Error from last account: {last_error_message}"
+                    detail += f" [{trace.summary()}]"
                     await _log_failure(503, detail)
                     return JSONResponse(
                         status_code=503,
@@ -508,6 +514,7 @@ async def messages(
                 
                 if response.status_code == 200:
                     # SUCCESS - report and return
+                    trace.outcome("200")
                     await account_manager.report_success(account.id, request_data.model)
                     
                     if request_data.stream:
@@ -698,6 +705,7 @@ async def messages(
                     
                     # Classify error
                     error_type = classify_error(response.status_code, error_reason)
+                    trace.outcome(f"{response.status_code} {error_reason or '-'} ({error_type.value})")
                     
                     if error_type == ErrorType.FATAL:
                         # FATAL - return to client immediately
@@ -740,6 +748,7 @@ async def messages(
                         continue  # Next iteration
             
             except HTTPException as e:
+                trace.outcome(f"{e.status_code} {'network error' if e.status_code in (502, 504) else 'error'}")
                 await http_client.close()
                 
                 # Network errors (502/504 from request_with_retry) = RECOVERABLE
@@ -773,6 +782,7 @@ async def messages(
                 raise
             except Exception as e:
                 await http_client.close()
+                trace.outcome("internal error")
                 logger.error(f"Internal error: {e}", exc_info=True)
                 logger.error(f"HTTP 500 - POST /v1/messages - {str(e)[:100]}")
                 if debug_logger:
@@ -812,6 +822,8 @@ async def messages(
             detail = "All accounts failed after full circle."
             if last_error_message:
                 detail += f" Error from last account: {last_error_message}"
+            trace.exhausted()
+            detail += f" [{trace.summary()}]"
             await _log_failure(503, detail)
             return JSONResponse(
                 status_code=503,

@@ -945,6 +945,9 @@ class AccountManager:
             # ALWAYS iterate over ALL accounts
             all_account_ids = list(self._accounts.keys())
 
+            # Why accounts were passed over in the first pass: when nothing is left we say so (see the fallback warning below).
+            skipped = {"tried": 0, "disabled": 0, "circuit_open": 0, "quota": 0, "init_failed": 0}
+
             # Two-pass selection: first pass skips quota-exhausted accounts,
             # second pass allows them as fallback
             for allow_quota_exhausted in (False, True):
@@ -955,10 +958,12 @@ class AccountManager:
 
                     # Skip accounts already tried in current failover loop
                     if exclude_accounts and account_id in exclude_accounts:
+                        skipped["tried"] += not allow_quota_exhausted
                         continue
 
                     # Skip disabled accounts
                     if account.disabled:
+                        skipped["disabled"] += not allow_quota_exhausted
                         continue
 
                     # Check Circuit Breaker (Half-Open state with exponential backoff)
@@ -973,6 +978,7 @@ class AccountManager:
                         if time_since_failure < effective_timeout:
                             # Probabilistic retry
                             if random.random() > self._probabilistic_retry_chance:
+                                skipped["circuit_open"] += not allow_quota_exhausted
                                 continue
                             else:
                                 logger.info(f"Probabilistic retry for broken account {account_id}")
@@ -983,6 +989,7 @@ class AccountManager:
                     # Skip quota-exhausted accounts in first pass
                     if not allow_quota_exhausted and self._is_quota_exhausted(account):
                         logger.debug(f"Skipping quota-exhausted account {account_id} ({account.current_usage}/{account.usage_limit})")
+                        skipped["quota"] += 1
                         continue
 
                     # Lazy initialization
@@ -991,21 +998,31 @@ class AccountManager:
                         if not success:
                             account.failures += 1
                             self._dirty = True
+                            skipped["init_failed"] += not allow_quota_exhausted
                             continue
 
                     # Check TTL and refresh if needed
                     if account.models_cached_at > 0:
                         age = time.time() - account.models_cached_at
                         if age > ACCOUNT_CACHE_TTL:
+                            refresh_started = time.monotonic()
                             try:
                                 await self._refresh_account_models(account_id)
                             except Exception as e:
                                 logger.warning(f"Failed to refresh models for {account_id}: {e}")
+                            # This runs while holding the account lock: if it is slow every request waits behind it
+                            refresh_seconds = time.monotonic() - refresh_started
+                            if refresh_seconds >= 1.0:
+                                logger.warning(f"Model list refresh of {account_id} took {refresh_seconds:.1f}s (inside the account lock)")
 
                     # No model validation - let Kiro API decide (gateway, not gatekeeper)
                     # Account is suitable!
                     if allow_quota_exhausted and self._is_quota_exhausted(account):
-                        logger.warning(f"All accounts quota-exhausted, falling back to {account_id}")
+                        logger.warning(
+                            f"All accounts quota-exhausted, falling back to {account_id} "
+                            f"(first pass passed over: already tried {skipped['tried']}, disabled {skipped['disabled']}, "
+                            f"circuit open {skipped['circuit_open']}, over quota {skipped['quota']}, failed to start {skipped['init_failed']})"
+                        )
                     return account
 
             # All accounts unavailable

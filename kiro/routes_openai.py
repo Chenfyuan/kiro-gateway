@@ -43,6 +43,7 @@ from kiro.config import (
     PROFILE_ARN,
 )
 from kiro.caller_identity import resolve_caller, caller_of
+from kiro.attempt_trace import AttemptTrace
 from kiro.models_openai import (
     OpenAIModel,
     ModelList,
@@ -301,6 +302,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         account_manager = request.app.state.account_manager
         all_accounts = list(account_manager._accounts.keys())
         MAX_ATTEMPTS = len(all_accounts) * 2  # Full circle with margin
+        trace = AttemptTrace(request_data.model, MAX_ATTEMPTS)
         
         last_error_message = None
         last_error_status = None
@@ -335,13 +337,16 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         
         for attempt in range(MAX_ATTEMPTS):
             # Get next available account (excluding already tried)
+            trace.before_selection()
             account = await account_manager.get_next_account(
                 request_data.model,
                 exclude_accounts=tried_accounts
             )
+            trace.selected(account.id if account else None)
             
             if account is None:
                 # All accounts unavailable
+                trace.exhausted()
                 if len(all_accounts) == 1:
                     # Single account - return original error with original status code
                     await _log_failure(last_error_status or 503,
@@ -355,6 +360,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                     detail = "No available accounts for this model."
                     if last_error_message:
                         detail += f" Error from last account: {last_error_message}"
+                    detail += f" [{trace.summary()}]"
                     await _log_failure(503, detail)
                     raise HTTPException(status_code=503, detail=detail)
             
@@ -411,6 +417,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                 
                 if response.status_code == 200:
                     # SUCCESS - report and return
+                    trace.outcome("200")
                     await account_manager.report_success(account.id, request_data.model)
                     
                     # Prepare data for token counting
@@ -574,6 +581,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                             ))
 
                         return JSONResponse(content=openai_response)
+                else:
                     # ERROR - classify and decide
                     try:
                         error_content = await response.aread()
@@ -599,6 +607,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                     
                     # Classify error
                     error_type = classify_error(response.status_code, error_reason)
+                    trace.outcome(f"{response.status_code} {error_reason or '-'} ({error_type.value})")
                     
                     if error_type == ErrorType.FATAL:
                         # FATAL - return to client immediately
@@ -641,6 +650,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         continue  # Next iteration
             
             except HTTPException as e:
+                trace.outcome(f"{e.status_code} {'network error' if e.status_code in (502, 504) else 'error'}")
                 await http_client.close()
                 
                 # Network errors (502/504 from request_with_retry) = RECOVERABLE
@@ -674,6 +684,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                 raise
             except Exception as e:
                 await http_client.close()
+                trace.outcome("internal error")
                 logger.error(f"Internal error: {e}", exc_info=True)
                 logger.error(f"HTTP 500 - POST /v1/chat/completions - {str(e)[:100]}")
                 if debug_logger:
@@ -697,6 +708,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             detail = "All accounts failed after full circle."
             if last_error_message:
                 detail += f" Error from last account: {last_error_message}"
+            trace.exhausted()
+            detail += f" [{trace.summary()}]"
             await _log_failure(503, detail)
             raise HTTPException(status_code=503, detail=detail)
     

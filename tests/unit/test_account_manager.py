@@ -1300,3 +1300,77 @@ class TestFormatDuration:
         """Test formatting days."""
         assert _format_duration(86400) == "1d"
         assert _format_duration(172800) == "2d"
+
+
+class TestFallbackExplainsItself:
+    """
+    When the first pass finds no account under the quota threshold the manager falls back to a
+    quota-exhausted one and warns. The warning has to say why the first pass found nothing: an
+    account already tried in this request, a disabled one, a circuit-open one and one over its quota
+    all look the same from outside, and which of them it is decides what to do about it.
+    """
+
+    @staticmethod
+    def _manager(tmp_path, accounts):
+        manager = AccountManager(
+            credentials_file=str(tmp_path / "credentials.json"),
+            state_file=str(tmp_path / "state.json"),
+        )
+        manager._accounts = {a.id: a for a in accounts}
+        manager._probabilistic_retry_chance = 0.0  # a broken account is really skipped, not retried by chance
+        return manager
+
+    @staticmethod
+    def _account(name, **fields):
+        return Account(id=name, auth_manager=MagicMock(), models_cached_at=0.0, **fields)
+
+    @staticmethod
+    def _warnings():
+        from loguru import logger
+        lines = []
+        handler = logger.add(lambda m: lines.append((m.record["level"].name, m.record["message"])), level="WARNING")
+        return lines, lambda: logger.remove(handler)
+
+    @pytest.mark.asyncio
+    async def test_the_warning_counts_why_each_account_was_passed_over(self, tmp_path):
+        manager = self._manager(tmp_path, [
+            self._account("tried", current_usage=100, usage_limit=10000),
+            self._account("off", disabled=True),
+            self._account("hot_a", current_usage=9500, usage_limit=10000),
+            self._account("hot_b", current_usage=9300, usage_limit=10000),
+            self._account("broken", failures=3, last_failure_time=time.time()),
+        ])
+        lines, stop = self._warnings()
+        try:
+            account = await manager.get_next_account("claude-opus-4.8", exclude_accounts={"tried"})
+        finally:
+            stop()
+
+        assert account.id == "hot_a"  # the first quota-exhausted account in order
+        text = [t for level, t in lines if "falling back to hot_a" in t]
+        assert len(text) == 1
+        assert "already tried 1" in text[0] and "disabled 1" in text[0]
+        assert "circuit open 1" in text[0] and "over quota 2" in text[0]
+
+    @pytest.mark.asyncio
+    async def test_no_warning_when_an_account_under_the_threshold_exists(self, tmp_path):
+        manager = self._manager(tmp_path, [
+            self._account("hot", current_usage=9500, usage_limit=10000),
+            self._account("fine", current_usage=1000, usage_limit=10000),
+        ])
+        lines, stop = self._warnings()
+        try:
+            account = await manager.get_next_account("claude-opus-4.8")
+        finally:
+            stop()
+
+        assert account.id == "fine"
+        assert not [t for _, t in lines if "falling back" in t]
+
+    @pytest.mark.asyncio
+    async def test_nothing_left_returns_none(self, tmp_path):
+        manager = self._manager(tmp_path, [
+            self._account("a", current_usage=100, usage_limit=10000),
+            self._account("b", disabled=True),
+        ])
+        assert await manager.get_next_account("claude-opus-4.8", exclude_accounts={"a"}) is None
